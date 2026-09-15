@@ -1,0 +1,13 @@
+# Dormant / provenance-only modules — never published
+dormant/
+
+__pycache__/
+*.py[cod]
+*.orig
+.DS_Store
+.ipynb_checkpoints/
+
+logs/
+results/
+wandb/
+*.mp4
