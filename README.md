@@ -110,7 +110,7 @@ python test_transformer_progressive_remove_3step_all.py \
 
 ### CrazyFlie (CF)
 
-CrazyFlie uses environment-specific defaults (`area=3`, `n_obs=27`, `n_rays=32`, `obs_len_range=[0.1, 0.6]`), so `--area` and `--n-obs` are not needed.
+`--area-size` and `--n-obs` are not needed: they are read from the checkpoint's `config.yaml`, which for the released CrazyFlie weights is `area_size=3.0`, `n_obs=6`. The per-environment entry in `test_transformer_eval.py` is only a fallback for checkpoints that do not record them.
 
 **Table 1 — Sim**
 ```bash

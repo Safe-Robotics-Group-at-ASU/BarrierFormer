@@ -8,18 +8,18 @@ Training configuration: area_size=3.0 m (l=3), 3-D cubic world.
 
 Motivation
 ----------
-The policy is trained at rho=1.0 (27 obstacles in a 3×3×3 m cube).
-Evaluation progressively removes obstacles to test how the policy degrades
-as the environment becomes less cluttered.
+The policy is trained with n_obs=6 (rho = 6/27 ~ 0.22). Every density in the
+sweep below is therefore denser than training; the sweep measures how the
+policy degrades as clutter increases beyond what it saw.
 
 Density definition (volumetric, 3-D cubic world)
 -------------------------------------------------
     rho = n_obs / area_size^3   (area_size=3.0 → volume=27 m^3)
 
 Default sweep — densest first (all at l=3):
-    rho=1.00 : n_obs=27   (training density)
-    rho=0.75 : n_obs=20   (25% obstacles removed)
-    rho=0.50 : n_obs=13   (50% obstacles removed)
+    rho=1.00 : n_obs=27
+    rho=0.75 : n_obs=20
+    rho=0.50 : n_obs=13
 
 Episode length: 256 steps (matches training default at l=3).
 Pass --max-step to override.
