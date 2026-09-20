@@ -462,7 +462,9 @@ class DubinsCar(MultiAgentEnv):
 
     # ========================================================================
     # STATE / ACTION BOUNDS
-    #   v in [-0.8, 0.8]; |omega| <= 5, |a| <= 3 (paper Eq. 19).
+    #   State: v in [-0.8, 0.8] (position and heading are unbounded).
+    #   Action: both channels of u = [u_omega, a] are bounded to [-3, 3].
+    #
     # ========================================================================
     def state_lim(self, state: Optional[State] = None) -> Tuple[State, State]:
         """
