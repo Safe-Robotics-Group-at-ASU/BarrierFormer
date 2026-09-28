@@ -2,6 +2,7 @@
 # e.g.: pip install "jax[cuda12]"
 jax==0.6.2
 jaxlib==0.6.2
+#pip install   "jax-cuda12-plugin[with-cuda]==0.6.2"   "jax-cuda12-pjrt==0.6.2"
 
 flax==0.10.7
 jraph==0.0.6.dev0
