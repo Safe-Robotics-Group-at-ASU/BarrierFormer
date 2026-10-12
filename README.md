@@ -2,22 +2,21 @@
 
 **Project website:** https://safe-robotics-group-at-asu.github.io/BarrierFormer-website/
 
-A causal-transformer policy for safe navigation. A learned control barrier function (CBF) is enforced over an H-step predicted rollout, and the policy is fine-tuned with a CBF/SQP teacher. Three environments: DoubleIntegrator (DI), DubinsCar (DC) and CrazyFlie (CF).
+A causal-transformer policy for safe navigation. A learned control barrier function (CBF) is enforced over an H-step predicted rollout, and the policy is trained in Phase 2 with a CBF/SQP teacher. Three environments: DoubleIntegrator (DI), DubinsCar (DC) and CrazyFlie (CF).
 
 ```
 BarrierFormer/
 ├── barrierformer/     one shared package
 │   ├── nn/            causal transformer, action head, dynamics head, CBF network
-│   ├── algo/          fine-tuning algorithm (CBF losses, SQP teacher, receding-horizon policy)
+│   ├── algo/          Phase 2 training algorithm (CBF losses, SQP teacher, receding-horizon policy)
 │   ├── env/           double_integrator.py, dubins_car.py, crazyflie.py (+ LiDAR / obstacle utils)
 │   ├── trainer/       training loop, replay buffers
 │   └── utils/
-├── train_di.py        fine-tuning: DoubleIntegrator
-├── train_dc.py        fine-tuning: DubinsCar
-├── train_cf.py        fine-tuning: CrazyFlie
+├── train_di.py        Phase 2 training: DoubleIntegrator
+├── train_dc.py        Phase 2 training: DubinsCar
+├── train_cf.py        Phase 2 training: CrazyFlie
 ├── test.py            evaluation: normal / generalization / robustness (all envs)
 ├── checkpoints/{DI,DC,CF}/{dynhead,simroll}/   final models: config.yaml + models/1000/{actor,cbf,cbf_tgt}.pkl
-├── pretrained/{DI,DC,CF}/                      pretrained transformer weights (params_final.pkl + meta)
 ├── requirements.txt   Python dependencies
 ├── README.md          this file (layout + training)
 └── test.md            all test commands + expected results
@@ -44,7 +43,7 @@ python test.py --env DI --ckpt checkpoints/DI/dynhead                        # n
 python test.py --env DI --ckpt checkpoints/DI/dynhead --mode generalization
 ```
 
-## Training (reproduce the final models)
+## Phase 2 training (reproduce the final models)
 
 GPU recommended. Add `--simulator-rollout=True` to train the simulator-rollout ablation.
 
@@ -67,10 +66,6 @@ python train_cf.py --area-size 3.0 --num-agents 1 --n-obs 6 --lidar-encoding sec
 ```
 
 **Outputs:** `logs/<Env>/gcbf_transformer/seed0_<timestamp>/`, holding `config.yaml` and `models/<step>/`. Point `test.py --ckpt` at that folder.
-
-**Launching several runs at once:** start them a few seconds apart, because the run folder name is a timestamp to the second.
-
-**`--steps` sets the learning-rate schedule:** it is the length of the cosine decay, not just the stopping point.
 
 ## Acknowledgements
 
