@@ -1,215 +1,77 @@
 # BarrierFormer
 
-BarrierFormer is a Transformer-based Control Barrier Function (CBF) framework for safe single-agent control. It is built on top of the environments and training infrastructure from [GCBF+](https://mit-realm.github.io/gcbfplus-website/).
+**Project website:** https://safe-robotics-group-at-asu.github.io/BarrierFormer-website/
 
-## Dependencies
+A causal-transformer policy for safe navigation. A learned control barrier function (CBF) is enforced over an H-step predicted rollout, and the policy is fine-tuned with a CBF/SQP teacher. Three environments: DoubleIntegrator (DI), DubinsCar (DC) and CrazyFlie (CF).
 
-We recommend using [CONDA](https://www.anaconda.com/) to manage the environment:
+```
+BarrierFormer/
+├── barrierformer/     one shared package
+│   ├── nn/            causal transformer, action head, dynamics head, CBF network
+│   ├── algo/          fine-tuning algorithm (CBF losses, SQP teacher, receding-horizon policy)
+│   ├── env/           double_integrator.py, dubins_car.py, crazyflie.py (+ LiDAR / obstacle utils)
+│   ├── trainer/       training loop, replay buffers
+│   └── utils/
+├── train_di.py        fine-tuning: DoubleIntegrator
+├── train_dc.py        fine-tuning: DubinsCar
+├── train_cf.py        fine-tuning: CrazyFlie
+├── test.py            evaluation: normal / generalization / robustness (all envs)
+├── checkpoints/{DI,DC,CF}/{dynhead,simroll}/   final models: config.yaml + models/1000/{actor,cbf,cbf_tgt}.pkl
+├── pretrained/{DI,DC,CF}/                      pretrained transformer weights (params_final.pkl + meta)
+├── requirements.txt   Python dependencies
+├── README.md          this file (layout + training)
+└── test.md            all test commands + expected results
+```
+
+## Final models
+
+All models use K = 12 (history), H = 6 (prediction horizon) and checkpoint 1000. There are two per environment:
+- `dynhead`: the CBF rollout is predicted by the learned dynamics head (**the method**).
+- `simroll`: the CBF rollout comes from the simulator (ablation).
+
+Within each environment the two were trained with identical settings except `--simulator-rollout`.
+
+## Requirements
+
+Python 3.10. Install the dependencies with `pip install -r requirements.txt` (install JAX with CUDA support separately for GPU training). Run all scripts from inside `BarrierFormer/`.
+
+## Testing
+
+See `test.md`. In short:
 
 ```bash
-conda create -n barrierformer python=3.10
-conda activate barrierformer
+python test.py --env DI --ckpt checkpoints/DI/dynhead                        # normal test (seeds 0 1 2)
+python test.py --env DI --ckpt checkpoints/DI/dynhead --mode generalization
 ```
 
-Install JAX following the [official instructions](https://github.com/google/jax#installation), then install the remaining dependencies:
+## Training (reproduce the final models)
+
+GPU recommended. Add `--simulator-rollout=True` to train the simulator-rollout ablation.
 
 ```bash
-pip install -r requirements.txt
+COMMON="--n-rays 32 --max-step 256 --history-len 12 --hidden-dim 128 --num-heads 2 --num-layers 1 --mlp-ratio 4.0 \
+ --action-head-hidden-dim 128 --action-head-num-layers 4 --dynamics-head-hidden-dim 128 --dynamics-head-num-layers 3 \
+ --horizon 6 --n-sqp-iter 100 --relax-penalty 1e4 --alpha 0.3 --gamma 0.02 --beta 20.0 --cbf-tgt-tau 0.5 --labeling-horizon 32 \
+ --loss-action-coef 0.5 --loss-dt-cbf-coef 0.5 --loss-dyn-coef 1.0 --loss-safe-coef 1.0 --loss-unsafe-coef 1.5 \
+ --lr-actor 3e-5 --lr-cbf 3e-6 --lr-schedule --max-grad-norm 1.0 --batch-size 256 --buffer-size 1024 --inner-epoch 8 \
+ --n-env-train 16 --n-env-test 32 --eval-interval 1 --save-interval 10 --seed 0"
+
+# DoubleIntegrator
+python train_di.py --area-size 4.0 --n-obs 8 --lidar-ray-order --pretrain-ckpt pretrained/DI/params_final.pkl $COMMON --steps 1000 --name di_k12_h6_dynhead
+
+# DubinsCar
+python train_dc.py --area-size 4.0 --num-agents 1 --n-obs 8 --use-orig-u-ref --pid-k-v 2.7 --lidar-ray-order --state-obs vxy --pretrain-ckpt pretrained/DC/params_final.pkl $COMMON --steps 1000 --name dc_k12_h6_dynhead
+
+# CrazyFlie
+python train_cf.py --area-size 3.0 --num-agents 1 --n-obs 6 --lidar-encoding sector --pretrain-ckpt pretrained/CF/params_final.pkl $COMMON --steps 1000 --name cf_k12_h6_dynhead
 ```
 
-## Installation
+**Outputs:** `logs/<Env>/gcbf_transformer/seed0_<timestamp>/`, holding `config.yaml` and `models/<step>/`. Point `test.py --ckpt` at that folder.
 
-```bash
-pip install -e .
-```
+**Launching several runs at once:** start them a few seconds apart, because the run folder name is a timestamp to the second.
 
-## Environments
+**`--steps` sets the learning-rate schedule:** it is the length of the cosine decay, not just the stopping point.
 
-Two 2D environments: `DoubleIntegrator`, `DubinsCar`  
-One 3D environments:`CrazyFlie`
+## Acknowledgements
 
-
-**Sim**: same command with simulator rollout substitution (see above).
-
-## Evaluation
-
-Reproduce all evaluation results using the pretrained checkpoints in `Trained-Weights/`. All commands run 3 seeds × 32 parallel episodes and skip video rendering.
-
-| Flag | Meaning |
-|---|---|
-| `--seeds 0 1 2` | Evaluate over 3 random seeds, report aggregate |
-| `--n-env 32` | 32 parallel episodes per seed |
-| `--parallel` | Batch all episodes with `jax.vmap` |
-| `--max-step 256` | Episode length |
-| `--no-video` | Skip `.mp4` / h-trajectory rendering |
-| `--log` | Append results to `<path>/test_log.csv` |
-
-### Double Integrator (DI)
-
-**Table 1 — Sim**
-```bash
-python test_transformer_eval.py --path ./Trained-Weights/DI/DI-Sim/ \
-    --seeds 0 1 2 --n-env 32 --parallel --max-step 256 --no-video \
-    --env-id DoubleIntegrator --log --area 4 --n-obs 8
-```
-
-**Table 1 — Dyn**
-```bash
-python test_transformer_eval.py --path ./Trained-Weights/DI/DI-Dyn/ \
-    --seeds 0 1 2 --n-env 32 --parallel --max-step 256 --no-video \
-    --env-id DoubleIntegrator --area 4 --n-obs 8
-```
-
-**Table 2 — Sim**
-```bash
-python test_transformer_progressive_remove_3step_all.py \
-    --env-id DoubleIntegrator --path ./Trained-Weights/DI/DI-Sim/ \
-    --seeds 0 1 2 --n-env 32 --parallel
-```
-
-**Table 2 — Dyn**
-```bash
-python test_transformer_progressive_remove_3step_all.py \
-    --env-id DoubleIntegrator --path ./Trained-Weights/DI/DI-Dyn/ \
-    --seeds 0 1 2 --n-env 32 --parallel
-```
-
----
-
-### Dubins Car (DC)
-
-**Table 1 — Sim**
-```bash
-python test_transformer_eval.py --path ./Trained-Weights/DC/Dubins-Sim/ \
-    --seeds 0 1 2 --n-env 32 --parallel --max-step 256 --no-video \
-    --env-id DubinsCar --area 4 --n-obs 8
-```
-
-**Table 1 — Dyn**
-```bash
-python test_transformer_eval.py --path ./Trained-Weights/DC/Dubins-DYN/ \
-    --seeds 0 1 2 --n-env 32 --parallel --max-step 256 --no-video \
-    --env-id DubinsCar --log --area 4 --n-obs 8
-```
-
-**Table 2 — Sim**
-```bash
-python test_transformer_progressive_remove_3step_all.py \
-    --env-id DubinsCar --path ./Trained-Weights/DC/Dubins-Sim/ \
-    --seeds 0 1 2 --n-env 32 --parallel
-```
-
-**Table 2 — Dyn**
-```bash
-python test_transformer_progressive_remove_3step_all.py \
-    --env-id DubinsCar --path ./Trained-Weights/DC/Dubins-DYN/ \
-    --seeds 0 1 2 --n-env 32 --parallel
-```
-
----
-
-### CrazyFlie (CF)
-
-`--area-size` and `--n-obs` are not needed: they are read from the checkpoint's `config.yaml`, which for the released CrazyFlie weights is `area_size=3.0`, `n_obs=6`. The per-environment entry in `test_transformer_eval.py` is only a fallback for checkpoints that do not record them.
-
-**Table 1 — Sim**
-```bash
-python test_transformer_eval.py --path ./Trained-Weights/CF/CF-Sim/ \
-    --seeds 0 1 2 --n-env 32 --parallel --max-step 256 --no-video \
-    --env-id CrazyFlie  --obs-len-range 0.2 0.7
-```
-
-**Table 1 — Dyn**
-```bash
-python test_transformer_eval.py --path ./Trained-Weights/CF/CF-Dyn/ \
-    --seeds 0 1 2 --n-env 32 --parallel --max-step 256 --no-video \
-    --env-id CrazyFlie  --obs-len-range 0.2 0.7
-```
-
-**Table 2 — Sim**
-```bash
-python test_transformer_sweep_dense_to_sparse_crazyflie.py \
-    --path ./Trained-Weights/CF/CF-Sim/ --seeds 0 1 2
-```
-
-**Table 2 — Dyn**
-```bash
-python test_transformer_sweep_dense_to_sparse_crazyflie.py \
-    --path ./Trained-Weights/CF/CF-Dyn/ --seeds 0 1 2
-```
-
----
-
-
-## Training
-
-BarrierFormer uses a **dynamics head** — a learned MLP that predicts the next-state residual `Δx` from the transformer's latent and the applied action. During training, the DTCBF horizon rollout uses the dynamics head's predicted states. For the **Sim** variant, this rollout is replaced by the known ground-truth simulator (`step_simulator` in `barrierformer/algo/barrierformer.py`), which is JAX-differentiable via Euler integration.
-
-Transformer pretraining (SDF-based, required before training all environments):
-
-```bash
-python pretrain_transformer.py
-```
-
-### Double Integrator
-
-```bash
-python train_transformer.py \
-    --area-size 4.0 --steps 5000 --n-env-train 16 \
-    --buffer-size 1024 --n-sqp-iter 35 --relax-penalty 5000 \
-    --alpha 0.3 --beta 20.0 --gamma 0.1 \
-    --lr-actor 3e-5 --lr-cbf 1e-5 \
-    --loss-dt-cbf-coef 0.5 --loss-dyn-coef 1.0 \
-    --lr-schedule \
-    --pretrain-ckpt Pretrained-ckpts/DI/params_best.pkl \
-    --name DI-Dyn
-```
-
-**Sim** (replace dynamics head rollout with simulator): same command, but in `barrierformer/algo/barrierformer.py` replace the dynamics head state propagation with `self._env.step_simulator`.
-
-### Dubins Car
-
-```bash
-python train_transformer_dubins.py \
-    --area-size 4.0 --steps 5000 --n-env-train 16 \
-    --buffer-size 1024 --n-sqp-iter 50 --relax-penalty 5000 \
-    --alpha 0.3 --beta 20.0 --gamma 0.1 \
-    --lr-actor 3e-5 --lr-cbf 1e-5 --max-grad-norm 1.0 \
-    --loss-dt-cbf-coef 0.5 --loss-dyn-coef 2.0 \
-    --lr-schedule \
-    --pretrain-ckpt Pretrained-ckpts/DC/params_best.pkl \
-    --name DC-Dyn
-```
-
-**Sim**: same command with simulator rollout substitution (see above).
-
-### CrazyFlie
-
-CrazyFlie observations are normalized, so the pretrained dynamics head predicts the **normalized** state increment `Δx / scale` rather than raw `Δx`. CrazyFlie training therefore uses `barrierformer/algo/gcbf_plus_cf.py` instead of the default `gcbf_plus.py`. `gcbf_plus_cf.py` loads a per-dimension scale vector from a `.npz` file (passed via `dyn_scale_path`) and de-normalizes the dynamics head output before advancing state: `x_{k+1} = x_k + delta_x_hat * scale`. For DI and DubinsCar the scale is all-ones (no-op), so the standard `gcbf_plus.py` is used for those environments.
-
-```bash
-python train_transformer_crazyflie.py \
-    --area-size 3.0 --steps 5000 --n-env-train 16 --n-obs 6 \
-    --buffer-size 512 --n-sqp-iter 25 --relax-penalty 1000 \
-    --alpha 0.3 --beta 10.0 --gamma 0.0 \
-    --lr-actor 3e-5 --lr-cbf 3e-5 --max-grad-norm 2.0 \
-    --loss-dt-cbf-coef 0.2 --loss-dyn-coef 1.0 \
-    --pretrain-ckpt Pretrained-ckpts/CF/params_best.pkl \
-    --name CF-Dyn
-```
-
-## Citation
-
-This work builds on GCBF+ (Public Repository), and adding appropriate citations:
-
-```bibtex
-@ARTICLE{zhang2025gcbf+,
-      author={Zhang, Songyuan and So, Oswin and Garg, Kunal and Fan, Chuchu},
-      journal={IEEE Transactions on Robotics},
-      title={{GCBF}+: A Neural Graph Control Barrier Function Framework for Distributed Safe Multiagent Control},
-      year={2025},
-      volume={41},
-      pages={1533-1552},
-      doi={10.1109/TRO.2025.3530348}
-}
-```
+This codebase is built on [GCBF+](https://github.com/MIT-REALM/gcbfplus) (Zhang, So, Garg and Fan, "GCBF+: A Neural Graph Control Barrier Function Framework for Distributed Safe Multi-Agent Control", IEEE T-RO 2025). We thank the GCBF+ authors for making their code publicly available.

@@ -10,11 +10,13 @@ from ...utils.graph import GraphsTuple
 
 
 class CBFNet(nn.Module):
+    """GNN-based CBF network."""
     gnn_cls: Type[GNN]
     head_cls: Type[nn.Module]
 
     @nn.compact
     def __call__(self, obs: GraphsTuple, n_agents: int, *args, **kwargs) -> Array:
+        """CBF value for each agent node."""
         x = self.gnn_cls()(obs, node_type=0, n_type=n_agents)
         x = self.head_cls()(x)
         x = nn.tanh(nn.Dense(1, kernel_init=default_nn_init())(x))
@@ -23,7 +25,9 @@ class CBFNet(nn.Module):
 
 class CBF:
 
+    """Wrapper around the GNN CBF network."""
     def __init__(self, node_dim: int, edge_dim: int, n_agents: int, gnn_layers: int):
+        """Build the GNN CBF network."""
         self.node_dim = node_dim
         self.edge_dim = edge_dim
         self.n_agents = n_agents
@@ -50,4 +54,5 @@ class CBF:
         )
 
     def get_cbf(self, params: Params, obs: GraphsTuple) -> Array:
+        """CBF values for a graph."""
         return self.net.apply(params, obs, self.n_agents)

@@ -13,22 +13,21 @@ from ...utils.graph import GraphsTuple
 
 
 class StateFn(nn.Module):
+    """GNN state-value function."""
     gnn_cls: Type[GNN]
     aggr_cls: Type[nn.Module]
     head_cls: Type[nn.Module]
 
     @nn.compact
     def __call__(self, obs: GraphsTuple, n_agents: int, *args, **kwargs) -> Array:
-        # get node features
+        """Value for each graph."""
         x = self.gnn_cls()(obs, node_type=0, n_type=n_agents)
 
-        # aggregate information using attention
         gate_feats = self.aggr_cls()(x)
         gate_feats = nn.Dense(1, kernel_init=default_nn_init())(gate_feats).squeeze(-1)
         attn = jax.nn.softmax(gate_feats, axis=-1)
         x = jnp.sum(attn[:, None] * x, axis=0)
 
-        # pass through head class
         x = self.head_cls()(x)
         x = nn.Dense(1, kernel_init=default_nn_init())(x)
 
@@ -37,7 +36,9 @@ class StateFn(nn.Module):
 
 class ValueNet:
 
+    """Wrapper around the GNN value network."""
     def __init__(self, node_dim: int, edge_dim: int, n_agents: int, gnn_layers: int = 1):
+        """Build the GNN value network."""
         self.node_dim = node_dim
         self.edge_dim = edge_dim
         self.n_agents = n_agents
@@ -64,7 +65,6 @@ class ValueNet:
             act_final=False,
             name='ValueHead'
         )
-        # self.net = StateFn(, _nu=1)
         self.net = StateFn(
             gnn_cls=self.value_gnn,
             aggr_cls=self.value_attn,
@@ -72,5 +72,6 @@ class ValueNet:
         )
 
     def get_value(self, params: Params, obs: GraphsTuple) -> Array:
+        """Value estimate for a graph."""
         values = self.net.apply(params, obs, self.n_agents)
         return values.squeeze()

@@ -13,7 +13,22 @@ from ..utils.utils import merge01
 from .obstacle import Obstacle, Rectangle, Cuboid, Sphere
 
 
+STATE_OBS_MODES = ("raw", "vxy")
+
+
+def encode_state_obs(agent_states: Array, mode: str = "raw") -> Array:
+    """Agent-state part of the observation."""
+    if mode == "raw":
+        return agent_states
+    if mode == "vxy":
+        th, v = agent_states[..., 2], agent_states[..., 3]
+        return jnp.stack([agent_states[..., 0], agent_states[..., 1],
+                          v * jnp.cos(th), v * jnp.sin(th)], axis=-1)
+    raise ValueError(f"unknown state_obs mode {mode!r}; supported: {STATE_OBS_MODES}")
+
+
 def RK4_step(x_dot_fn: Callable, x: State, u: Action, dt: float) -> Array:
+    """One Runge-Kutta 4 integration step."""
     k1 = x_dot_fn(x, u)
     k2 = x_dot_fn(x + 0.5 * dt * k1, u)
     k3 = x_dot_fn(x + 0.5 * dt * k2, u)
@@ -27,26 +42,18 @@ def lqr(
         Q: np.ndarray,
         R: np.ndarray,
 ):
-    """
-    Solve the discrete time lqr controller.
-        x_{t+1} = A x_t + B u_t
-        cost = sum x.T*Q*x + u.T*R*u
-    Code adapted from Mark Wilfred Mueller's continuous LQR code at
-    https://www.mwm.im/lqr-controllers-with-python/
-    Based on Bertsekas, p.151
-    Yields the control law u = -K x
-    """
+    """Solve the discrete time lqr controller."""
 
-    # first, try to solve the Riccati equation
     X = solve_discrete_are(A, B, Q, R)
 
-    # compute the LQR gain
     K = inv(B.T @ X @ B + R) @ (B.T @ X @ A)
 
     return K
 
 
-def get_lidar(start_point: Pos, obstacles: Obstacle, num_beams: int, sense_range: float, max_returns: int = 32):
+def get_lidar(start_point: Pos, obstacles: Obstacle, num_beams: int, sense_range: float, max_returns: int = 32,
+              sort: bool = True):
+    """Ray-cast LiDAR hit points."""
     if isinstance(obstacles, Rectangle):
         thetas = jnp.linspace(-np.pi, np.pi - 2 * np.pi / num_beams, num_beams)
         starts = start_point[None, :].repeat(num_beams, axis=0)
@@ -74,27 +81,19 @@ def get_lidar(start_point: Pos, obstacles: Obstacle, num_beams: int, sense_range
                                 start_point[None, :] + jnp.array([[0., 0., -sense_range]])], axis=0)
     else:
         raise NotImplementedError
-    sensor_data = raytracing(starts, ends, obstacles, max_returns)
+    sensor_data = raytracing(starts, ends, obstacles, max_returns, sort=sort)
 
     return sensor_data
 
 
 def inside_obstacles(points: Pos, obstacles: Obstacle, r: Radius = 0.) -> BoolScalar:
-    """
-    points: (n, n_dim) or (n_dim, )
-    obstacles: tree_stacked obstacles.
-
-    Returns: (n, ) or (,). True if in collision, false otherwise.
-    """
-    # one point inside one obstacle
+    """Mask of points that lie inside any obstacle."""
     def inside(point: Pos, obstacle: Obstacle):
         return obstacle.inside(point, r)
 
-    # one point inside any obstacle
     def inside_any(point: Pos, obstacle: Obstacle):
         return jax.vmap(ft.partial(inside, point))(obstacle).max()
 
-    # any point inside any obstacle
     if points.ndim == 1:
         if obstacles.center.shape[0] == 0:
             return jnp.zeros((), dtype=bool)
@@ -107,8 +106,8 @@ def inside_obstacles(points: Pos, obstacles: Obstacle, r: Radius = 0.) -> BoolSc
     return is_in
 
 
-def raytracing(starts: Pos, ends: Pos, obstacles: Obstacle, max_returns: int) -> Pos:
-    # if the start point if inside the obstacle, return the start point
+def raytracing(starts: Pos, ends: Pos, obstacles: Obstacle, max_returns: int, sort: bool = True) -> Pos:
+    """Ray-cast from start to end points against obstacles and return the closest hits."""
     is_in = inside_obstacles(starts, obstacles)
 
     def raytracing_single(start: Pos, end: Pos, obstacle: Obstacle):
@@ -123,10 +122,12 @@ def raytracing(starts: Pos, ends: Pos, obstacles: Obstacle, max_returns: int) ->
         alphas = jax.vmap(ft.partial(raytracing_any, obstacle=obstacles))(starts, ends)
         alphas *= (1 - is_in)
 
-    # assert max_returns <= alphas.shape[0]
-    alphas_return = jnp.argsort(alphas)[:max_returns]
-
     hitting_points = starts + (ends - starts) * (alphas[..., None])
+
+    if not sort:
+        return hitting_points
+
+    alphas_return = jnp.argsort(alphas)[:max_returns]
 
     return hitting_points[alphas_return]
 
@@ -140,17 +141,18 @@ def get_node_goal_rng(
         min_dist: float,
         max_travel: float = None
 ) -> [Pos, Pos]:
-    max_iter = 1024  # maximum number of iterations to find a valid initial state/goal
+    """Sample collision-free start and goal positions."""
+    max_iter = 1024
     states = jnp.zeros((n, dim))
     goals = jnp.zeros((n, dim))
 
-    def get_node(reset_input: Tuple[int, Array, Array, Array]):  # key, node, all nodes
+    def get_node(reset_input: Tuple[int, Array, Array, Array]):
         i_iter, this_key, _, all_nodes = reset_input
         use_key, this_key = jr.split(this_key, 2)
         i_iter += 1
         return i_iter, this_key, jr.uniform(use_key, (dim,), minval=0, maxval=side_length), all_nodes
 
-    def non_valid_node(reset_input: Tuple[int, Array, Array, Array]):  # key, node, all nodes
+    def non_valid_node(reset_input: Tuple[int, Array, Array, Array]):
         i_iter, _, node, all_nodes = reset_input
         dist_min = jnp.linalg.norm(all_nodes - node, axis=1).min()
         collide = dist_min <= min_dist
@@ -159,7 +161,6 @@ def get_node_goal_rng(
         return ~valid
 
     def get_goal(reset_input: Tuple[int, Array, Array, Array, Array]):
-        # key, goal_candidate, agent_start_pos, all_goals
         i_iter, this_key, _, agent, all_goals = reset_input
         use_key, this_key = jr.split(this_key, 2)
         i_iter += 1
@@ -170,7 +171,6 @@ def get_node_goal_rng(
                 use_key, (dim,), minval=-max_travel, maxval=max_travel) + agent, agent, all_goals
 
     def non_valid_goal(reset_input: Tuple[int, Array, Array, Array, Array]):
-        # key, goal_candidate, agent_start_pos, all_goals
         i_iter, _, goal, agent, all_goals = reset_input
         dist_min = jnp.linalg.norm(all_goals - goal, axis=1).min()
         collide = dist_min <= min_dist
@@ -186,7 +186,6 @@ def get_node_goal_rng(
         return out
 
     def reset_body(reset_input: Tuple[int, Array, Array, Array]):
-        # agent_id, key, states, goals
         agent_id, this_key, all_states, all_goals = reset_input
         agent_key, goal_key, this_key = jr.split(this_key, 3)
         agent_candidate = jr.uniform(agent_key, (dim,), minval=0, maxval=side_length)
@@ -208,7 +207,6 @@ def get_node_goal_rng(
         all_goals = all_goals.at[agent_id].set(goal_candidate)
         agent_id += 1
 
-        # if no solution is found, start over
         agent_id = (1 - (n_iter_agent >= max_iter)) * (1 - (n_iter_goal >= max_iter)) * agent_id
         all_states = (1 - (n_iter_agent >= max_iter)) * (1 - (n_iter_goal >= max_iter)) * all_states
         all_goals = (1 - (n_iter_agent >= max_iter)) * (1 - (n_iter_goal >= max_iter)) * all_goals
@@ -216,7 +214,6 @@ def get_node_goal_rng(
         return agent_id, this_key, all_states, all_goals
 
     def reset_not_terminate(reset_input: Tuple[int, Array, Array, Array]):
-        # agent_id, key, states, goals
         agent_id, this_key, all_states, all_goals = reset_input
         return agent_id < n
 

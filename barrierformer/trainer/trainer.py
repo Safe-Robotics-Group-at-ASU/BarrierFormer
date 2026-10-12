@@ -17,6 +17,7 @@ from ..utils.utils import jax_vmap
 
 class Trainer:
 
+    """Training loop: collect rollouts, update the algorithm, evaluate and save."""
     def __init__(
             self,
             env: MultiAgentEnv,
@@ -29,6 +30,7 @@ class Trainer:
             params: dict,
             save_log: bool = True
     ):
+        """Set up the environments, algorithm, logging and checkpoint folders."""
         self.env = env
         self.env_test = env_test
         self.algo = algo
@@ -40,7 +42,6 @@ class Trainer:
         if Trainer._check_params(params):
             self.params = params
 
-        # make dir for the models if save_log is True
         if save_log:
             if not os.path.exists(log_dir):
                 os.mkdir(log_dir)
@@ -63,6 +64,7 @@ class Trainer:
 
     @staticmethod
     def _check_params(params: dict) -> bool:
+        """Check that the required training parameters are present."""
         assert 'run_name' in params, 'run_name not found in params'
         assert 'training_steps' in params, 'training_steps not found in params'
         assert 'eval_interval' in params, 'eval_interval not found in params'
@@ -74,18 +76,9 @@ class Trainer:
         return True
 
     def train(self):
-        # record start time
+        """Run the full training loop."""
         start_time = time()
 
-        # ── Transformer receding-horizon rollout function ────────────────────
-        # Uses receding_horizon_act() for action selection at every real step.
-        # Only the first predicted action is applied; the rest of the H-step
-        # predictive horizon is discarded (MPC-style replanning).
-        #
-        # self.algo must expose:
-        #   .tf_policy        — CausalTransformerPolicy Flax module
-        #   .tf_actor_params  — frozen parameter pytree (also the 'params' arg)
-        #   .horizon          — rollout horizon H (int)
         def rollout_fn_single(params, key):
             return rollout_transformer(
                 self.env,
@@ -101,9 +94,6 @@ class Trainer:
 
         rollout_fn = jax.jit(rollout_fn)
 
-        # prepare the test function for evaluation every eval_interval steps
-        # Uses rollout_transformer (same policy as training) so that eval
-        # numbers reflect the transformer policy, not the legacy GNN actor.
         def test_fn_single(params, key):
             return rollout_transformer(
                 self.env_test,
@@ -119,52 +109,64 @@ class Trainer:
 
         test_fn = jax.jit(test_fn)
 
-        # start training loop
-        test_key = jr.PRNGKey(self.seed)
-        test_keys = jr.split(test_key, 1_000)[:self.n_env_test]
+        FIXED_EVAL_SEED = 1234
+        N_FIXED_EVAL    = 96
+        test_keys_fixed = jr.split(jr.PRNGKey(FIXED_EVAL_SEED), 10_000)[:N_FIXED_EVAL]
+        test_keys_seed  = jr.split(jr.PRNGKey(self.seed),       10_000)[:self.n_env_test]
+
+        def compute_eval_metrics(test_keys):
+            """Run the real-sim eval on a set of keys and return scalar metrics."""
+            test_rollouts: Rollout = test_fn(self.algo.tf_actor_train_state.params, test_keys)
+            total_reward = test_rollouts.rewards.sum(axis=-1)
+            finish_fun   = jax_vmap(jax_vmap(self.env_test.finish_mask))
+            return {
+                "reward":       float(np.mean(total_reward)),
+                "reward_final": float(np.mean(test_rollouts.rewards[:, -1])),
+                "reward_min":   float(total_reward.min()),
+                "reward_max":   float(total_reward.max()),
+                "cost":         float(test_rollouts.costs.sum(axis=-1).mean()),
+                "unsafe_frac":  float(np.mean(test_rollouts.costs.max(axis=-1) >= 1e-6)),
+                "finish":       float(finish_fun(test_rollouts.graph).max(axis=1).mean()),
+            }
 
         pbar = tqdm(total=self.steps, ncols=80)
         for step in range(0, self.steps + 1):
-            # evaluate the algorithm on the test environment every eval_interval steps
             if step % self.eval_interval == 0:
-                test_rollouts: Rollout = test_fn(self.algo.tf_actor_train_state.params, test_keys)
-                total_reward = test_rollouts.rewards.sum(axis=-1)
-                assert total_reward.shape == (self.n_env_test,)
-                reward_min, reward_max = total_reward.min(), total_reward.max()
-                reward_mean = np.mean(total_reward)
-                reward_final = np.mean(test_rollouts.rewards[:, -1])
-                finish_fun = jax_vmap(jax_vmap(self.env_test.finish_mask))
-                finish = finish_fun(test_rollouts.graph).max(axis=1).mean()
-                cost = test_rollouts.costs.sum(axis=-1).mean()
-                unsafe_frac = np.mean(test_rollouts.costs.max(axis=-1) >= 1e-6)
+                m_fixed = compute_eval_metrics(test_keys_fixed)
+                m_seed  = compute_eval_metrics(test_keys_seed)
+
                 eval_info = {
-                    "eval/reward": reward_mean,
-                    "eval/reward_final": reward_final,
-                    "eval/cost": cost,
-                    "eval/unsafe_frac": unsafe_frac,
-                    "eval/finish": finish,
+                    "eval_fixed/reward":       m_fixed["reward"],
+                    "eval_fixed/reward_final": m_fixed["reward_final"],
+                    "eval_fixed/cost":         m_fixed["cost"],
+                    "eval_fixed/unsafe_frac":  m_fixed["unsafe_frac"],
+                    "eval_fixed/finish":       m_fixed["finish"],
+                    "eval/reward":       m_seed["reward"],
+                    "eval/reward_final": m_seed["reward_final"],
+                    "eval/cost":         m_seed["cost"],
+                    "eval/unsafe_frac":  m_seed["unsafe_frac"],
+                    "eval/finish":       m_seed["finish"],
                     "step": step,
                 }
                 wandb.log(eval_info, step=self.update_steps)
                 time_since_start = time() - start_time
-                eval_verbose = (f'step: {step:3}, time: {time_since_start:5.0f}s, reward: {reward_mean:9.4f}, '
-                                f'min/max reward: {reward_min:7.2f}/{reward_max:7.2f}, cost: {cost:8.4f}, '
-                                f'unsafe_frac: {unsafe_frac:6.2f}, finish: {finish:6.2f}')
+                eval_verbose = (f'step: {step:3}, time: {time_since_start:5.0f}s, '
+                                f'[fixed96] reward: {m_fixed["reward"]:9.4f}, '
+                                f'cost: {m_fixed["cost"]:8.4f}, unsafe_frac: {m_fixed["unsafe_frac"]:6.2f}, '
+                                f'finish: {m_fixed["finish"]:6.2f}  |  '
+                                f'[seed32] cost: {m_seed["cost"]:8.4f}, unsafe_frac: {m_seed["unsafe_frac"]:6.2f}')
                 tqdm.write(eval_verbose)
                 if self.save_log and step % self.save_interval == 0:
                     self.algo.save(os.path.join(self.model_dir), step)
 
-            # collect rollouts using transformer receding-horizon policy
             key_x0, self.key = jax.random.split(self.key)
             key_x0 = jax.random.split(key_x0, self.n_env_train)
             rollouts: Rollout = rollout_fn(self.algo.tf_actor_params, key_x0)
 
-            # update the algorithm
             update_info = self.algo.update(rollouts, step)
             wandb.log(update_info, step=self.update_steps)
             self.update_steps += 1
 
-            # ── Loss diagnostics ─────────────────────────────────────────────
             loss_str = "  losses |"
             for k, v in sorted(update_info.items()):
                 val = float(v)

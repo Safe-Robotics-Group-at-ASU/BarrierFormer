@@ -13,6 +13,7 @@ _EnvState = TypeVar("_EnvState")
 
 
 class EdgeBlock(NamedTuple):
+    """Dense block of edges between a group of receivers and senders."""
     edge_feats: Float[Array, "n_recv n_send n_edge_feat"]
     edge_mask: Bool[Array, "n_recv n_send"]
     ids_recv: Int[Array, "n_recv"]
@@ -20,19 +21,23 @@ class EdgeBlock(NamedTuple):
 
     @property
     def n_recv(self):
+        """Number of receivers."""
         assert self.edge_feats.shape[0] == self.edge_mask.shape[0] == len(self.ids_recv)
         return len(self.ids_recv)
 
     @property
     def n_send(self):
+        """Number of senders."""
         assert self.edge_feats.shape[1] == self.edge_mask.shape[1] == len(self.ids_send)
         return len(self.ids_send)
 
     @property
     def n_edges(self):
+        """Number of edges."""
         return self.n_recv * self.n_send
 
     def make_edges(self, pad_id: int, edge_mask: Bool[Array, "n_recv n_send"] = None):
+        """Convert the dense block to edge lists."""
         id_recv_rep = ei.repeat(self.ids_recv, "n_recv -> n_recv n_send", n_send=self.n_send)
         id_send_rep = ei.repeat(self.ids_send, "n_send -> n_recv n_send", n_recv=self.n_recv)
         edge_mask = self.edge_mask if edge_mask is None else edge_mask
@@ -46,17 +51,18 @@ class EdgeBlock(NamedTuple):
 
 @jtu.register_pytree_with_keys_class
 class GraphsTuple(tuple, Generic[_State, _EnvState]):
-    n_node: Int[Array, "n_graph"]  # number of nodes in each subgraph
-    n_edge: Int[Array, "n_graph"]  # number of edges in each subgraph
+    """Graph (or batch of graphs) with nodes, edges, states and environment state."""
+    n_node: Int[Array, "n_graph"]
+    n_edge: Int[Array, "n_graph"]
 
-    nodes: Float[Array, "sum_n_node ..."]  # node features
-    edges: Float[Array, "sum_n_edge ..."]  # edge features
-    states: _State  # node state features
+    nodes: Float[Array, "sum_n_node ..."]
+    edges: Float[Array, "sum_n_edge ..."]
+    states: _State
     receivers: Int[Array, "sum_n_edge"]
     senders: Int[Array, "sum_n_edge"]
-    node_type: Int[Array, "sum_n_node"]  # by default, 0 is agent, -1 is padding
-    env_states: _EnvState  # environment state features
-    connectivity: Int[Array, "sum_n_node sum_n_node"] = None  # desired connectivity matrix
+    node_type: Int[Array, "sum_n_node"]
+    env_states: _EnvState
+    connectivity: Int[Array, "sum_n_node sum_n_node"] = None
 
     def __new__(
         cls,
@@ -71,6 +77,7 @@ class GraphsTuple(tuple, Generic[_State, _EnvState]):
         env_states: _EnvState,
         connectivity=None,
     ):
+        """Create a GraphsTuple."""
         tup = (n_node, n_edge, nodes, edges, states, receivers, senders, node_type, env_states, connectivity)
         self = tuple.__new__(cls, tup)
         self.n_node = n_node
@@ -86,20 +93,24 @@ class GraphsTuple(tuple, Generic[_State, _EnvState]):
         return self
 
     def tree_flatten_with_keys(self):
+        """Flatten for JAX pytrees."""
         flat_contents = [(GetAttrKey(k), getattr(self, k)) for k in get_type_hints(GraphsTuple).keys()]
         aux_data = None
         return flat_contents, aux_data
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
+        """Unflatten from JAX pytrees."""
         return cls(*children)
 
     @property
     def is_single(self) -> bool:
+        """Whether this is a single graph."""
         return self.n_node.ndim == 0
 
     @property
     def n_graphs(self) -> int:
+        """Number of graphs."""
         if self.n_node.ndim == 0:
             return 1
         assert len(self.n_node) == len(self.n_edge)
@@ -107,9 +118,11 @@ class GraphsTuple(tuple, Generic[_State, _EnvState]):
 
     @property
     def batch_shape(self):
+        """Batch shape of the graphs."""
         return self.n_node.shape
 
     def type_nodes(self, type_idx: int, n_type: int) -> Float[Array, "... n_type n_feats"]:
+        """Node features of one node type."""
         assert self.nodes.ndim == 2
         n_feats = self.nodes.shape[1]
 
@@ -124,6 +137,7 @@ class GraphsTuple(tuple, Generic[_State, _EnvState]):
         return out
 
     def type_states(self, type_idx: int, n_type: int) -> Float[Array, "... n_type n_states"]:
+        """States of one node type."""
         assert self.states.ndim == 2
         n_states = self.states.shape[1]
 
@@ -138,6 +152,7 @@ class GraphsTuple(tuple, Generic[_State, _EnvState]):
         return out
 
     def __str__(self) -> str:
+        """Readable summary of the graph."""
         node_repr = str(self.nodes)
         edge_repr = str(self.edges)
 
@@ -158,6 +173,7 @@ class GraphsTuple(tuple, Generic[_State, _EnvState]):
         env_states: _EnvState = None,
         connectivity=None,
     ) -> "GraphsTuple":
+        """Copy with some fields replaced."""
         return GraphsTuple(
             self.n_node if n_node is None else n_node,
             self.n_edge if n_edge is None else n_edge,
@@ -172,6 +188,7 @@ class GraphsTuple(tuple, Generic[_State, _EnvState]):
         )
 
     def without_edge(self):
+        """Copy without edges."""
         return GraphsTuple(
             self.n_node,
             self.n_edge,
@@ -187,34 +204,37 @@ class GraphsTuple(tuple, Generic[_State, _EnvState]):
 
 
 class GetGraph(NamedTuple):
-    nodes: Float[Array, "n_nodes n_node_feat"]  # node features
-    node_type: Int[Array, "n_nodes"]  # by default, 0 is agent
+    """Graph description used to build a padded GraphsTuple."""
+    nodes: Float[Array, "n_nodes n_node_feat"]
+    node_type: Int[Array, "n_nodes"]
     edge_blocks: list[EdgeBlock]
     env_states: Any
-    states: Float[Array, "n_nodes n_state"]  # node state features
-    connectivity: Int[Array, "n_node n_node"] = None  # desired connectivity matrix
+    states: Float[Array, "n_nodes n_state"]
+    connectivity: Int[Array, "n_node n_node"] = None
 
     @property
     def n_nodes(self):
+        """Number of nodes."""
         return self.nodes.shape[0]
 
     @property
     def node_dim(self) -> int:
+        """Node feature dimension."""
         return self.nodes.shape[1]
 
     @property
     def state_dim(self) -> int:
+        """State dimension."""
         return self.states.shape[1]
 
     def to_padded(self) -> GraphsTuple:
-        # make a dummy node for creating fake self edges.
+        """Build a GraphsTuple with a padding node."""
         node_feat_dummy = jnp.zeros(self.node_dim)
         node_feats_pad = jnp.concatenate([self.nodes, node_feat_dummy[None]], axis=0)
         node_type_pad = jnp.concatenate([self.node_type, jnp.full(1, -1)], axis=0)
         state_dummy = jnp.ones(self.state_dim) * -1
         state_pad = jnp.concatenate([self.states, state_dummy[None]], axis=0)
 
-        # Construct edge list.
         pad_id = self.n_nodes
         edge_feats_lst, recv_list, send_list = [], [], []
         for edge_block in self.edge_blocks:

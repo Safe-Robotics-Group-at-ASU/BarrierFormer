@@ -1,13 +1,13 @@
-# Dormant / provenance-only modules — never published
-dormant/
-
+# Python bytecode
 __pycache__/
 *.py[cod]
-*.orig
-.DS_Store
-.ipynb_checkpoints/
 
+# Training output
 logs/
-results/
 wandb/
 *.mp4
+
+# OS / editor
+.DS_Store
+*~
+.*.sw?

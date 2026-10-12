@@ -15,33 +15,34 @@ save_attn = False
 
 
 def save_set_attn(v):
+    """Store attention weights for visualization."""
     global save_attn
     save_attn = v
 
 
 class GNNUpdate(NamedTuple):
+    """Message, aggregate and update functions of a GNN layer."""
     message: Callable[[EdgeAttr, Node, Node], Array]
     aggregate: Callable[[Array, Array, int], Array]
     update: Callable[[Node, Array], Array]
 
     def __call__(self, graph: GraphsTuple) -> GraphsTuple:
+        """Apply one message-passing update."""
         assert graph.n_node.shape == tuple()
         node_feats_send = jtu.tree_map(lambda n: safe_get(n, graph.senders), graph.nodes)
         node_feats_recv = jtu.tree_map(lambda n: safe_get(n, graph.receivers), graph.nodes)
 
-        # message passing
         edges = self.message(graph.edges, node_feats_send, node_feats_recv)
 
-        # aggregate messages
         aggr_msg = jtu.tree_map(lambda edge: self.aggregate(edge, graph.receivers, graph.nodes.shape[0]), edges)
 
-        # update nodes
         new_node_feats = self.update(graph.nodes, aggr_msg)
 
         return graph._replace(nodes=new_node_feats)
 
 
 class GNNLayer(nn.Module):
+    """One attention-based GNN layer."""
     msg_net_cls: Type[nn.Module]
     aggr_net_cls: Type[nn.Module]
     update_net_cls: Type[nn.Module]
@@ -50,6 +51,7 @@ class GNNLayer(nn.Module):
 
     @nn.compact
     def __call__(self, graph: GraphsTuple) -> GraphsTuple:
+        """Apply the layer to a graph."""
         def message(edge_feats: EdgeAttr, sender_feats: Node, receiver_feats: Node) -> Array:
             feats = jnp.concatenate([edge_feats, sender_feats, receiver_feats], axis=-1)
             feats = self.msg_net_cls()(feats)
@@ -76,6 +78,7 @@ class GNNLayer(nn.Module):
 
 
 class GNN(nn.Module):
+    """Stack of GNN layers."""
     msg_dim: int
     hid_size_msg: Tuple[int, ...]
     hid_size_aggr: Tuple[int, ...]
@@ -85,6 +88,7 @@ class GNN(nn.Module):
 
     @nn.compact
     def __call__(self, graph: GraphsTuple, node_type: int = None, n_type: int = None) -> Array:
+        """Encode a graph into node features."""
         for i in range(self.n_layers):
             out_dim = self.out_dim if i == self.n_layers - 1 else self.msg_dim
             msg_net = ft.partial(MLP, hid_sizes=self.hid_size_msg, act=nn.relu, act_final=False, name="msg")

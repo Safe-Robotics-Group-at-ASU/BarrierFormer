@@ -4,6 +4,7 @@ from .utils import default_nn_init, scaled_init, AnyFloat, HidSizes, ActFn, sign
 
 
 class MLP(nn.Module):
+    """Multi-layer perceptron."""
     hid_sizes: HidSizes
     act: ActFn = nn.relu
     act_final: bool = True
@@ -13,6 +14,7 @@ class MLP(nn.Module):
 
     @nn.compact
     def __call__(self, x: AnyFloat, apply_dropout: bool = False) -> AnyFloat:
+        """Apply the MLP."""
         nn_init = default_nn_init
         for is_last_layer, ii, hid_size in signal_last_enumerate(self.hid_sizes):
             if is_last_layer and self.scale_final is not None:

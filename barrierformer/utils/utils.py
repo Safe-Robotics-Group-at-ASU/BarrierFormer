@@ -20,6 +20,7 @@ from .typing import Array
 
 
 def merge01(x):
+    """Merge the first two axes."""
     return ei.rearrange(x, "n1 n2 ... -> (n1 n2) ...")
 
 
@@ -31,17 +32,12 @@ _PyTree = TypeVar("_PyTree")
 
 
 def jax_vmap(fn: _Fn, in_axes: int | Sequence[Any] = 0, out_axes: Any = 0) -> _Fn:
+    """Typed wrapper of jax.vmap."""
     return jax.vmap(fn, in_axes, out_axes)
 
 
 def concat_at_front(arr1: jnp.ndarray, arr2: jnp.ndarray, axis: int) -> jnp.ndarray:
-    """
-    :param arr1: (nx, )
-    :param arr2: (T, nx)
-    :param axis: Which axis for arr2 to concat under.
-    :return: (T + 1, nx) with [arr1 arr2]
-    """
-    # The shapes of arr1 and arr2 should be the same without the dim at axis for arr1.
+    """Concatenate arr1 in front of arr2."""
     arr2_shape = list(arr2.shape)
     del arr2_shape[axis]
     assert np.all(np.array(arr2_shape) == np.array(arr1.shape))
@@ -53,6 +49,7 @@ def concat_at_front(arr1: jnp.ndarray, arr2: jnp.ndarray, axis: int) -> jnp.ndar
 
 
 def tree_concat_at_front(tree1: _PyTree, tree2: _PyTree, axis: int) -> _PyTree:
+    """Concatenate pytree leaves at the front."""
     def tree_concat_at_front_inner(arr1: jnp.ndarray, arr2: jnp.ndarray):
         return concat_at_front(arr1, arr2, axis=axis)
 
@@ -60,18 +57,22 @@ def tree_concat_at_front(tree1: _PyTree, tree2: _PyTree, axis: int) -> _PyTree:
 
 
 def tree_index(tree: _PyTree, idx: int) -> _PyTree:
+    """Index every leaf of a pytree."""
     return jtu.tree_map(lambda x: x[idx], tree)
 
 
 def jax2np(pytree: _PyTree) -> _PyTree:
+    """Convert a pytree of JAX arrays to NumPy."""
     return jtu.tree_map(np.array, pytree)
 
 
 def np2jax(pytree: _PyTree) -> _PyTree:
+    """Convert a pytree of NumPy arrays to JAX."""
     return jtu.tree_map(jnp.array, pytree)
 
 
 def mask2index(mask: jnp.ndarray, n_true: int) -> jnp.ndarray:
+    """Indices of the True entries of a mask."""
     idx = lax.top_k(mask, n_true)[1]
     return idx
 
@@ -85,6 +86,7 @@ def jax_jit_np(
         *args,
         **kwargs,
 ) -> _Fn:
+    """jax.jit that returns NumPy arrays."""
     jit_fn = jax.jit(fn, static_argnums, static_argnames, donate_argnums, device, *args, **kwargs)
 
     def wrapper(*args, **kwargs) -> _R:
@@ -94,11 +96,11 @@ def jax_jit_np(
 
 
 def chunk_vmap(fn: _Fn, chunks: int) -> _Fn:
+    """vmap a function over the batch in chunks."""
     fn_jit_vmap = jax_jit_np(jax.vmap(fn))
 
     def wrapper(*args) -> _R:
         args = list(args)
-        # 1: Get the batch size.
         batch_size = len(jtu.tree_leaves(args[0])[0])
         chunk_idxs = np.array_split(np.arange(batch_size), chunks)
 
@@ -107,19 +109,21 @@ def chunk_vmap(fn: _Fn, chunks: int) -> _Fn:
             chunk_input = jtu.tree_map(lambda x: x[idxs], args)
             out.append(fn_jit_vmap(*chunk_input))
         
-        # 2: Concatenate the output.
         out = tree_merge(out)
         return out
 
     return wrapper
 
 class MutablePatchCollection(mcollections.PatchCollection):
+    """Matplotlib patch collection whose patches can be updated."""
     def __init__(self, patches, *args, **kwargs):
+        """Store the patches."""
         self._paths = None
         self.patches = patches
         mcollections.PatchCollection.__init__(self, patches, *args, **kwargs)
 
     def get_paths(self):
+        """Paths of the current patches."""
         self.set_paths(self.patches)
         return self._paths
 
@@ -139,6 +143,7 @@ class CustomTimeElapsedColumn(ProgressColumn):
 
 
 def save_anim(ani: FuncAnimation, path: pathlib.Path):
+    """Save a matplotlib animation with a progress bar."""
     pbar = Progress(*Progress.get_default_columns(), CustomTimeElapsedColumn())
     pbar.start()
     task = pbar.add_task("Animating", total=ani._save_count)
@@ -151,6 +156,7 @@ def save_anim(ani: FuncAnimation, path: pathlib.Path):
 
 
 def tree_merge(data: List[NamedTuple]):
+    """Concatenate a list of pytrees along the first axis."""
     def body(*x):
         x = list(x)
         if isinstance(x[0], np.ndarray):
@@ -162,6 +168,7 @@ def tree_merge(data: List[NamedTuple]):
 
 
 def tree_stack(trees: list):
+    """Stack a list of pytrees along a new first axis."""
     def tree_stack_inner(*arrs):
         arrs = list(arrs)
         if isinstance(arrs[0], np.ndarray):

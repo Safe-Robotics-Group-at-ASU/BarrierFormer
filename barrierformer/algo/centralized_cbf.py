@@ -16,6 +16,7 @@ from .base import MultiAgentController
 
 class CentralizedCBF(MultiAgentController):
 
+    """Centralized hand-crafted CBF-QP controller."""
     def __init__(
             self,
             env: MultiAgentEnv,
@@ -27,6 +28,7 @@ class CentralizedCBF(MultiAgentController):
             alpha: float = 1.0,
             **kwargs
     ):
+        """Set up the centralized CBF-QP controller."""
         super(CentralizedCBF, self).__init__(
             env=env,
             node_dim=node_dim,
@@ -41,28 +43,35 @@ class CentralizedCBF(MultiAgentController):
 
     @property
     def config(self) -> dict:
+        """Algorithm configuration dictionary."""
         return {
             'alpha': self.alpha,
         }
 
     @property
     def actor_params(self) -> Params:
+        """No learned actor parameters."""
         raise NotImplementedError
 
     def step(self, graph: GraphsTuple, key: PRNGKey, params: Optional[Params] = None) -> Tuple[Action, Array]:
+        """Not used (no stochastic policy)."""
         raise NotImplementedError
 
     def get_cbf(self, graph: GraphsTuple) -> Array:
+        """Hand-crafted CBF values for a graph."""
         return self.cbf(graph)[0]
 
     def update(self, rollout: Rollout, step: int) -> dict:
+        """No training for this controller."""
         raise NotImplementedError
 
     def act(self, graph: GraphsTuple, params: Optional[Params] = None) -> Action:
+        """Action from the centralized CBF-QP."""
         return self.get_qp_action(graph)[0]
 
     def get_qp_action(self, graph: GraphsTuple, relax_penalty: float = 1e3) -> [Action, Array]:
-        assert graph.is_single  # consider single graph
+        """Solve the centralized CBF-QP for all agents."""
+        assert graph.is_single
         agent_node_mask = graph.node_type == 0
         agent_node_id = mask2index(agent_node_mask, self.n_agents)
 
@@ -74,28 +83,27 @@ class CentralizedCBF(MultiAgentController):
             return val
 
         agent_state = graph.type_states(type_idx=0, n_type=self.n_agents)
-        h = h_aug(agent_state)  # (n_agents, k)
-        h_x = jax.jacfwd(h_aug)(agent_state)  # (n_agents, k | n_agents, nx)
-        h = h.reshape(-1)  # (n_agents * k,)
+        h = h_aug(agent_state)
+        h_x = jax.jacfwd(h_aug)(agent_state)
+        h = h.reshape(-1)
 
         dyn_f, dyn_g = self._env.control_affine_dyn(agent_state)
         Lf_h = ei.einsum(h_x, dyn_f, "agent_i k agent_j nx, agent_j nx -> agent_i k")
         Lg_h = ei.einsum(h_x, dyn_g, "agent_i k agent_j nx, agent_j nx nu -> agent_i k agent_j nu")
-        Lf_h = Lf_h.reshape(-1)  # (n_agents * k,)
-        Lg_h = Lg_h.reshape((self.n_agents * self.k, -1))  # (n_agents * k, n_agents * nu)
+        Lf_h = Lf_h.reshape(-1)
+        Lg_h = Lg_h.reshape((self.n_agents * self.k, -1))
 
         u_lb, u_ub = self._env.action_lim()
         u_lb = u_lb[None, :].repeat(self.n_agents, axis=0).reshape(-1)
         u_ub = u_ub[None, :].repeat(self.n_agents, axis=0).reshape(-1)
         u_ref = self._env.u_ref(graph).reshape(-1)
 
-        # construct QP
         H = jnp.eye(self._env.action_dim * self.n_agents + self.n_agents * self.k, dtype=jnp.float32)
         H = H.at[-self.n_agents * self.k:, -self.n_agents * self.k:].set(
             H[-self.n_agents * self.k:, -self.n_agents * self.k:] * 10.0)
         g = jnp.concatenate([-u_ref, relax_penalty * jnp.ones(self.n_agents * self.k)])
         C = -jnp.concatenate([Lg_h, jnp.eye(self.n_agents * self.k)], axis=1)
-        b = Lf_h + self.alpha * h  # (n_agents * k,)
+        b = Lf_h + self.alpha * h
 
         r_lb = jnp.array([0.] * self.n_agents * self.k, dtype=jnp.float32)
         r_ub = jnp.array([jnp.inf] * self.n_agents * self.k, dtype=jnp.float32)
@@ -117,7 +125,9 @@ class CentralizedCBF(MultiAgentController):
         return u_opt, r
 
     def save(self, save_dir: str, step: int):
+        """Nothing to save."""
         raise NotImplementedError
 
     def load(self, load_dir: str, step: int):
+        """Nothing to load."""
         raise NotImplementedError

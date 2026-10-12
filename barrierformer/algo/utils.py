@@ -18,9 +18,7 @@ from ..utils.typing import Array, Done, Reward
 def compute_gae_fn(
         values: Array, rewards: Reward, dones: Done, next_values: Array, gamma: float, gae_lambda: float
 ) -> Tuple[Array, Array]:
-    """
-    Compute generalized advantage estimation.
-    """
+    """Compute generalized advantage estimation."""
     deltas = rewards + gamma * next_values * (1 - dones) - values
     gaes = deltas
 
@@ -38,23 +36,21 @@ def compute_gae_fn(
 def compute_gae(
         values: Array, rewards: Reward, dones: Done, next_values: Array, gamma: float, gae_lambda: float
 ) -> Tuple[Array, Array]:
+    """Batched generalized advantage estimation."""
     return jax.vmap(ft.partial(compute_gae_fn, gamma=gamma, gae_lambda=gae_lambda))(values, rewards, dones, next_values)
 
 
 def pwise_cbf_single_integrator_(pos: Array, agent_idx: int, o_obs_pos: Array, a_pos: Array, r: float, k: int):
+    """Pairwise hand-crafted CBF for one single-integrator agent."""
     n_agent = len(a_pos)
 
     all_obs_pos = jnp.concatenate([a_pos, o_obs_pos], axis=0)
 
-    # Only consider the k obstacles.
     o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
-    # Remove self collisions
     o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
 
-    # Take the k closest obstacles.
     k_idx = jnp.argsort(o_dist_sq)[:k]
     k_dist_sq = o_dist_sq[k_idx]
-    # Take radius into account. Add some epsilon for qp solver error.
     k_dist_sq = k_dist_sq - 4 * (1.01 * r) ** 2
 
     k_h0 = k_dist_sq
@@ -64,9 +60,8 @@ def pwise_cbf_single_integrator_(pos: Array, agent_idx: int, o_obs_pos: Array, a
 
 
 def pwise_cbf_single_integrator(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: int):
-    # (n_agents, 2)
+    """Pairwise hand-crafted CBFs for single-integrator agents."""
     a_states = graph.type_states(type_idx=0, n_type=n_agent)
-    # (n_obs, 2)
     obs_states = graph.type_states(type_idx=2, n_type=n_agent * n_rays)
     a_obs_states = ei.rearrange(obs_states, "(n_agent n_ray) d -> n_agent n_ray d", n_agent=n_agent)
 
@@ -77,6 +72,7 @@ def pwise_cbf_single_integrator(graph: GraphsTuple, r: float, n_agent: int, n_ra
 
 
 def pwise_cbf_double_integrator_(state: Array, agent_idx: int, o_obs_state: Array, a_state: Array, r: float, k: int):
+    """Pairwise hand-crafted CBF for one double-integrator agent."""
     n_agent = len(a_state)
 
     pos = state[:2]
@@ -84,14 +80,10 @@ def pwise_cbf_double_integrator_(state: Array, agent_idx: int, o_obs_state: Arra
     all_obs_pos = all_obs_state[:, :2]
     del o_obs_state
 
-    # Only consider the k closest obstacles.
     o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
-    # Remove self collisions
     o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
-    # Take the k closest obstacles.
     k_idx = jnp.argsort(o_dist_sq)[:k]
     k_dist_sq = o_dist_sq[k_idx]
-    # Take radius into account.
     k_dist_sq = k_dist_sq - 4 * r ** 2
 
     k_h0 = k_dist_sq
@@ -112,9 +104,8 @@ def pwise_cbf_double_integrator_(state: Array, agent_idx: int, o_obs_state: Arra
 
 
 def pwise_cbf_double_integrator(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: int):
-    # (n_agents, 4)
+    """Pairwise hand-crafted CBFs for double-integrator agents."""
     a_states = graph.type_states(type_idx=0, n_type=n_agent)
-    # (n_obs, 4)
     obs_states = graph.type_states(type_idx=2, n_type=n_agent * n_rays)
     a_obs_states = ei.rearrange(obs_states, "(n_agent n_ray) d -> n_agent n_ray d", n_agent=n_agent)
 
@@ -125,6 +116,7 @@ def pwise_cbf_double_integrator(graph: GraphsTuple, r: float, n_agent: int, n_ra
 
 
 def pwise_cbf_dubins_car_(state: Array, agent_idx: int, o_obs_state: Array, a_state: Array, r: float, k: int):
+    """Pairwise hand-crafted CBF for one Dubins car."""
     n_agent = len(a_state)
     n_obs = len(o_obs_state)
 
@@ -139,14 +131,10 @@ def pwise_cbf_dubins_car_(state: Array, agent_idx: int, o_obs_state: Array, a_st
     all_obs_vel = jnp.concatenate([agent_vel, jnp.zeros((n_obs, 2))], axis=0)
     del o_obs_state
 
-    # Only consider the k closest obstacles.
     o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
-    # Remove self collisions
     o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
-    # Take the k closest obstacles.
     k_idx = jnp.argsort(o_dist_sq)[:k]
     k_dist_sq = o_dist_sq[k_idx]
-    # Take radius into account. Add some epsilon for qp solver error.
     k_dist_sq = k_dist_sq - 4 * r ** 2
 
     k_h0 = k_dist_sq
@@ -167,9 +155,8 @@ def pwise_cbf_dubins_car_(state: Array, agent_idx: int, o_obs_state: Array, a_st
 
 
 def pwise_cbf_dubins_car(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: int):
-    # (n_agents, 4)
+    """Pairwise hand-crafted CBFs for Dubins cars."""
     a_states = graph.type_states(type_idx=0, n_type=n_agent)
-    # (n_obs, 4)
     obs_states = graph.type_states(type_idx=2, n_type=n_agent * n_rays)
     a_obs_states = ei.rearrange(obs_states, "(n_agent n_ray) d -> n_agent n_ray d", n_agent=n_agent)
 
@@ -180,7 +167,7 @@ def pwise_cbf_dubins_car(graph: GraphsTuple, r: float, n_agent: int, n_rays: int
 
 
 def pwise_cbf_crazyflie_(state: Array, agent_idx: int, o_obs_state: Array, a_state: Array, r: float, k: int):
-    # state: ( 12, )
+    """Pairwise hand-crafted high-order CBF for one CrazyFlie."""
     n_agent = len(a_state)
 
     pos = state[:3]
@@ -188,25 +175,18 @@ def pwise_cbf_crazyflie_(state: Array, agent_idx: int, o_obs_state: Array, a_sta
     all_obs_pos = all_obs_state[:, :3]
     del o_obs_state
 
-    # Only consider the k closest obstacles.
     o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
-    # Remove self collisions
     o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
-    # Take the k closest obstacles.
     k_idx = jnp.argsort(o_dist_sq)[:k]
     k_dist_sq = o_dist_sq[k_idx]
-    # Take radius into account. Add some epsilon for qp solver error.
     k_dist_sq = k_dist_sq - 4 * (1.01 * r) ** 2
 
     k_h0 = k_dist_sq
     assert k_h0.shape == (k,)
 
-    # all_obs_state = all_obs_state[k_idx]
-
     def crazyflie_f_(x: Array) -> Array:
         Ixx, Iyy, Izz = CrazyFlie.PARAMS["Ixx"], CrazyFlie.PARAMS["Iyy"], CrazyFlie.PARAMS["Izz"]
         I = jnp.array([Ixx, Iyy, Izz])
-        # roll, pitch, yaw
         phi, theta, psi = x[CrazyFlie.PHI], x[CrazyFlie.THETA], x[CrazyFlie.PSI]
         c_phi, s_phi = jnp.cos(phi), jnp.sin(phi)
         c_th, s_th = jnp.cos(theta), jnp.sin(theta)
@@ -219,7 +199,6 @@ def pwise_cbf_crazyflie_(state: Array, agent_idx: int, o_obs_state: Array, a_sta
         p, q, r = x[CrazyFlie.P], x[CrazyFlie.Q], x[CrazyFlie.R]
         pqr = jnp.array([p, q, r])
 
-        # Linear velocity
         R_W_cf = jnp.array(
             [
                 [c_psi * c_th, c_psi * s_th * s_phi - s_psi * c_phi, c_psi * s_th * c_phi + s_psi * s_phi],
@@ -231,7 +210,6 @@ def pwise_cbf_crazyflie_(state: Array, agent_idx: int, o_obs_state: Array, a_sta
         v_Wcf_W = R_W_cf @ v_Wcf_cf
         assert v_Wcf_W.shape == (3,)
 
-        # Euler angle dynamics.
         mat = jnp.array(
             [
                 [0, s_phi / c_th, c_phi / c_th],
@@ -242,11 +220,9 @@ def pwise_cbf_crazyflie_(state: Array, agent_idx: int, o_obs_state: Array, a_sta
         deuler_rpy = mat @ pqr
         deuler_ypr = deuler_rpy[::-1]
 
-        # Body frame linear acceleration.
         acc_cf_g = -R_W_cf[2, :] * 9.81
         acc_cf = -jnp.cross(pqr, uvw) + acc_cf_g
 
-        # Body frame angular acceleration.
         pqr_dot = -jnp.cross(pqr, I * pqr) / I
         rpq_dot = pqr_dot[::-1]
         assert pqr_dot.shape == (3,)
@@ -258,25 +234,25 @@ def pwise_cbf_crazyflie_(state: Array, agent_idx: int, o_obs_state: Array, a_sta
         k_xdiff = x[:3] - obs_x[:, :3]
         dist = jnp.square(k_xdiff).sum(axis=-1)
         dist = dist.at[agent_idx].set(1e2)
-        return dist[k_idx] - 4 * r ** 2  # (k,)
+        return dist[k_idx] - 4 * r ** 2
 
     def h1(x, obs_x):
-        x_dot = crazyflie_f_(x)  # (nx,)
-        obs_x_dot = jax.vmap(crazyflie_f_)(obs_x)  # (k, nx)
+        x_dot = crazyflie_f_(x)
+        obs_x_dot = jax.vmap(crazyflie_f_)(obs_x)
 
-        h0_x = jax.jacfwd(h0, argnums=0)(x, obs_x)  # (k, nx)
-        h0_obs_x = jax.jacfwd(h0, argnums=1)(x, obs_x)  # (k, k, nx)
+        h0_x = jax.jacfwd(h0, argnums=0)(x, obs_x)
+        h0_obs_x = jax.jacfwd(h0, argnums=1)(x, obs_x)
         h0_dot = ei.einsum(h0_x, x_dot, 'k nx, nx -> k') + \
-                 ei.einsum(h0_obs_x, obs_x_dot, 'k1 k2 nx, k2 nx -> k1')  # (k,)
+                 ei.einsum(h0_obs_x, obs_x_dot, 'k1 k2 nx, k2 nx -> k1')
         return h0_dot + 30.0 * h0(x, obs_x)
 
     def h2(x, obs_x):
         x_dot = crazyflie_f_(x)
         obs_x_dot = jax.vmap(crazyflie_f_)(obs_x)
-        h1_x = jax.jacfwd(h1, argnums=0)(x, obs_x)  # (k, nx)
-        h1_obs_x = jax.jacfwd(h1, argnums=1)(x, obs_x)  # (k, k, nx)
+        h1_x = jax.jacfwd(h1, argnums=0)(x, obs_x)
+        h1_obs_x = jax.jacfwd(h1, argnums=1)(x, obs_x)
         h1_dot = ei.einsum(h1_x, x_dot, 'k nx, nx -> k') + \
-                 ei.einsum(h1_obs_x, obs_x_dot, 'k1 k2 nx, k2 nx -> k1')  # (k,)
+                 ei.einsum(h1_obs_x, obs_x_dot, 'k1 k2 nx, k2 nx -> k1')
         return h1_dot + 50.0 * h1(x, obs_x)
 
     k_h2 = h2(state, all_obs_state)
@@ -288,9 +264,8 @@ def pwise_cbf_crazyflie_(state: Array, agent_idx: int, o_obs_state: Array, a_sta
 
 
 def pwise_cbf_crazyflie(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: int):
-    # (n_agents, 4)
+    """Pairwise hand-crafted CBFs for CrazyFlie agents."""
     a_states = graph.type_states(type_idx=0, n_type=n_agent)
-    # (n_obs, 4)
     obs_states = graph.type_states(type_idx=2, n_type=n_agent * n_rays)
     a_obs_states = ei.rearrange(obs_states, "(n_agent n_ray) d -> n_agent n_ray d", n_agent=n_agent)
 
@@ -301,7 +276,7 @@ def pwise_cbf_crazyflie(graph: GraphsTuple, r: float, n_agent: int, n_rays: int,
 
 
 def pwise_cbf_linear_drone_(state: Array, agent_idx: int, o_obs_state: Array, a_state: Array, r: float, k: int):
-    # state: ( 6, )
+    """Pairwise hand-crafted CBF for one linear drone."""
     n_agent = len(a_state)
 
     pos = state[:3]
@@ -309,14 +284,10 @@ def pwise_cbf_linear_drone_(state: Array, agent_idx: int, o_obs_state: Array, a_
     all_obs_pos = all_obs_state[:, :3]
     del o_obs_state
 
-    # Only consider the k closest obstacles.
     o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
-    # Remove self collisions
     o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
-    # Take the k closest obstacles.
     k_idx = jnp.argsort(o_dist_sq)[:k]
     k_dist_sq = o_dist_sq[k_idx]
-    # Take radius into account. Add some epsilon for qp solver error.
     k_dist_sq = k_dist_sq - 4 * (1.01 * r) ** 2
 
     k_h0 = k_dist_sq
@@ -337,9 +308,8 @@ def pwise_cbf_linear_drone_(state: Array, agent_idx: int, o_obs_state: Array, a_
 
 
 def pwise_cbf_linear_drone(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: int):
-    # (n_agents, 4)
+    """Pairwise hand-crafted CBFs for linear drones."""
     a_states = graph.type_states(type_idx=0, n_type=n_agent)
-    # (n_obs, 4)
     obs_states = graph.type_states(type_idx=2, n_type=n_agent * n_rays)
     a_obs_states = ei.rearrange(obs_states, "(n_agent n_ray) d -> n_agent n_ray d", n_agent=n_agent)
 
@@ -350,7 +320,7 @@ def pwise_cbf_linear_drone(graph: GraphsTuple, r: float, n_agent: int, n_rays: i
 
 
 def pwise_cbf_cfhl_(state: Array, agent_idx: int, o_obs_state: Array, a_state: Array, r: float, k: int):
-    # state: ( 6, )
+    """Pairwise hand-crafted CBF for one high-level CrazyFlie."""
     n_agent = len(a_state)
 
     pos = state[:3]
@@ -358,14 +328,10 @@ def pwise_cbf_cfhl_(state: Array, agent_idx: int, o_obs_state: Array, a_state: A
     all_obs_pos = all_obs_state[:, :3]
     del o_obs_state
 
-    # Only consider the k closest obstacles.
     o_dist_sq = ((pos - all_obs_pos) ** 2).sum(axis=-1)
-    # Remove self collisions
     o_dist_sq = o_dist_sq.at[agent_idx].set(1e2)
-    # Take the k closest obstacles.
     k_idx = jnp.argsort(o_dist_sq)[:k]
     k_dist_sq = o_dist_sq[k_idx]
-    # Take radius into account. Add some epsilon for qp solver error.
     k_dist_sq = k_dist_sq - 4 * (1.01 * r) ** 2
 
     k_h0 = k_dist_sq
@@ -380,7 +346,7 @@ def pwise_cbf_cfhl_(state: Array, agent_idx: int, o_obs_state: Array, a_state: A
 
         R_W_cf = CrazyFlie.get_rotation_mat(x)
         v_Wcf_cf = jnp.array([u, v, w])
-        v_Wcf_W = R_W_cf @ v_Wcf_cf  # world frame velocity
+        v_Wcf_W = R_W_cf @ v_Wcf_cf
         return v_Wcf_W
 
     k_vdiff = get_v_single_(state) - jax.vmap(get_v_single_)(all_obs_state[k_idx])
@@ -398,9 +364,8 @@ def pwise_cbf_cfhl_(state: Array, agent_idx: int, o_obs_state: Array, a_state: A
 
 
 def pwise_cbf_cfhl(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: int):
-    # (n_agents, 4)
+    """Pairwise hand-crafted CBFs for high-level CrazyFlie agents."""
     a_states = graph.type_states(type_idx=0, n_type=n_agent)
-    # (n_obs, 4)
     obs_states = graph.type_states(type_idx=2, n_type=n_agent * n_rays)
     a_obs_states = ei.rearrange(obs_states, "(n_agent n_ray) d -> n_agent n_ray d", n_agent=n_agent)
 
@@ -411,6 +376,7 @@ def pwise_cbf_cfhl(graph: GraphsTuple, r: float, n_agent: int, n_rays: int, k: i
 
 
 def get_pwise_cbf_fn(env: MultiAgentEnv, k: int = 3):
+    """Pick the pairwise CBF function for an environment."""
     if isinstance(env, SingleIntegrator):
         n_agent = env.num_agents
         n_rays = env.params["n_rays"]

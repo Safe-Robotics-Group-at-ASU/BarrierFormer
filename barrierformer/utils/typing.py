@@ -4,13 +4,11 @@ from typing import Dict, TypeVar, Any, List
 from numpy import ndarray
 
 
-# jax types
 PRNGKey = Float[Array, '2']
 
 BoolScalar = Bool[Array, ""]
 ABool = Bool[Array, "num_agents"]
 
-# environment types
 Action = Float[Array, 'num_agents action_dim']
 Reward = Float[Array, '']
 Cost = Float[Array, '']
@@ -27,10 +25,8 @@ Pos = Pos2d | Pos3d
 Radius = Float[Array, ''] | float
 
 
-# neural network types
 Params = TypeVar("Params", bound=core.FrozenDict[str, Any])
 
-# obstacles
 ObsType = Int[Array, '']
 ObsWidth = Float[Array, '']
 ObsHeight = Float[Array, '']

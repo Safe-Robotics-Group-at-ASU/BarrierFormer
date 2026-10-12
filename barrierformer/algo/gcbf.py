@@ -25,6 +25,7 @@ from .base import MultiAgentController
 
 class GCBF(MultiAgentController):
 
+    """Graph CBF (GCBF) algorithm with a GNN actor and GNN CBF."""
     def __init__(
             self,
             env: MultiAgentEnv,
@@ -50,6 +51,7 @@ class GCBF(MultiAgentController):
             online_pol_refine: bool = False,
             **kwargs
     ):
+        """Build the GNN actor, CBF network and optimizers."""
         super(GCBF, self).__init__(
             env=env,
             node_dim=node_dim,
@@ -58,7 +60,6 @@ class GCBF(MultiAgentController):
             n_agents=n_agents
         )
 
-        # set hyperparameters
         self.batch_size = batch_size
         self.lr_actor = lr_actor
         self.lr_cbf = lr_cbf
@@ -74,7 +75,6 @@ class GCBF(MultiAgentController):
         self.seed = seed
         self.online_pol_refine = online_pol_refine
 
-        # set nominal graph for initialization of the neural networks
         nominal_graph = GraphsTuple(
             nodes=jnp.zeros((n_agents, node_dim)),
             edges=jnp.zeros((n_agents, edge_dim)),
@@ -88,7 +88,6 @@ class GCBF(MultiAgentController):
         )
         self.nominal_graph = nominal_graph
 
-        # set up CBF
         self.cbf = CBF(
             node_dim=node_dim,
             edge_dim=edge_dim,
@@ -106,7 +105,6 @@ class GCBF(MultiAgentController):
             tx=self.cbf_optim
         )
 
-        # set up actor
         self.actor = DeterministicPolicy(
             node_dim=node_dim,
             edge_dim=edge_dim,
@@ -123,13 +121,13 @@ class GCBF(MultiAgentController):
             tx=self.actor_optim
         )
 
-        # set up key
         self.key = key
         self.buffer = ReplayBuffer(size=buffer_size)
         self.unsafe_buffer = ReplayBuffer(size=buffer_size // 2)
 
     @property
     def config(self) -> dict:
+        """Algorithm configuration dictionary."""
         return {
             'batch_size': self.batch_size,
             'lr_actor': self.lr_actor,
@@ -148,9 +146,11 @@ class GCBF(MultiAgentController):
 
     @property
     def actor_params(self) -> Params:
+        """Current actor parameters."""
         return self.actor_train_state.params
 
     def act(self, graph: GraphsTuple, params: Optional[Params] = None) -> Action:
+        """Deterministic action for a graph."""
         if self.online_pol_refine:
             return self.online_policy_refinement(graph, params)
         if params is None:
@@ -159,11 +159,11 @@ class GCBF(MultiAgentController):
         return nn_action
 
     def online_policy_refinement(self, graph: GraphsTuple, params: Optional[Params] = None) -> Action:
+        """Refine the action online with gradient steps on the CBF condition."""
         if params is None:
             params = self.actor_params
         h = self.get_cbf(graph)
 
-        # try u_ref first
         u_ref = self._env.u_ref(graph)
         next_graph_u_ref = self._env.forward_graph(graph, u_ref)
         h_next_u_ref = self.get_cbf(next_graph_u_ref)
@@ -201,30 +201,30 @@ class GCBF(MultiAgentController):
         return nn_action
 
     def step(self, graph: GraphsTuple, key: PRNGKey, params: Optional[Params] = None) -> Tuple[Action, Array]:
+        """Stochastic action and log-probability for a graph."""
         if params is None:
             params = self.actor_params
         action, log_pi = self.actor_train_state.apply_fn(params, graph, key)
         return 2 * action + self._env.u_ref(graph), log_pi
 
     def get_cbf(self, graph: GraphsTuple, params: Optional[Params] = None) -> Array:
+        """CBF values for a graph."""
         if params is None:
             params = self.cbf_train_state.params
         return self.cbf.get_cbf(params, graph)
 
     def update(self, rollout: Rollout, step: int) -> dict:
+        """Update the actor and CBF from a rollout."""
         key, self.key = jr.split(self.key)
 
         if self.buffer.length > self.batch_size:
-            # sample from memory and unsafe_memory
             memory = self.buffer.sample(rollout.length // 2)
             unsafe_memory = self.unsafe_buffer.sample(rollout.length * rollout.time_horizon)
 
-            # append new data to memory and unsafe_memory
             unsafe_mask = jax_vmap(jax_vmap(self._env.unsafe_mask))(rollout.graph).max(axis=-1)
             self.unsafe_buffer.append(jtu.tree_map(lambda x: x[unsafe_mask], rollout))
             self.buffer.append(rollout)
 
-            # get update data
             rollout = tree_merge([memory, rollout])
             rollout = jtu.tree_map(lambda x: merge01(x), rollout)
             rollout = tree_merge([unsafe_memory, rollout])
@@ -234,7 +234,6 @@ class GCBF(MultiAgentController):
             self.unsafe_buffer.append(jtu.tree_map(lambda x: x[unsafe_mask], rollout))
             rollout = jtu.tree_map(lambda x: merge01(x), rollout)
 
-        # inner loop
         update_info = {}
         for i_epoch in range(self.inner_epoch):
             idx = np.arange(rollout.length)
@@ -254,18 +253,17 @@ class GCBF(MultiAgentController):
             self, cbf_train_state: TrainState, actor_train_state: TrainState, rollout: Rollout, batch_idx: Array
     ) -> Tuple[TrainState, TrainState, dict]:
 
+        """Run the minibatch updates of the actor and CBF."""
         def update_fn(carry, idx):
             """Update the actor and the CBF network for a single batch given the batch index."""
             cbf, actor = carry
             rollout_batch = jtu.tree_map(lambda x: x[idx], rollout)
 
             def get_loss(cbf_params: Params, actor_params: Params) -> Tuple[Array, dict]:
-                # get CBF values
                 cbf_fn = jax_vmap(ft.partial(self.cbf.get_cbf, cbf_params))
                 h = cbf_fn(rollout_batch.graph).squeeze()
                 h = merge01(h)
 
-                # unsafe region h(x) < 0
                 unsafe_mask = merge01(jax_vmap(self._env.unsafe_mask)(rollout_batch.graph))
                 unsafe_data_ratio = jnp.mean(unsafe_mask)
                 h_unsafe = jnp.where(unsafe_mask, h, -jnp.ones_like(h) * self.eps * 2)
@@ -274,7 +272,6 @@ class GCBF(MultiAgentController):
                 acc_unsafe_mask = jnp.where(unsafe_mask, h, jnp.ones_like(h))
                 acc_unsafe = (jnp.sum(jnp.less(acc_unsafe_mask, 0)) + 1e-6) / (jnp.count_nonzero(unsafe_mask) + 1e-6)
 
-                # safe region h(x) > 0
                 safe_mask = merge01(jax_vmap(self._env.safe_mask)(rollout_batch.graph))
                 h_safe = jnp.where(safe_mask, h, jnp.ones_like(h) * self.eps * 2)
                 max_val_safe = jax.nn.relu(-h_safe + self.eps)
@@ -282,26 +279,21 @@ class GCBF(MultiAgentController):
                 acc_safe_mask = jnp.where(safe_mask, h, -jnp.ones_like(h))
                 acc_safe = (jnp.sum(jnp.greater(acc_safe_mask, 0)) + 1e-6) / (jnp.count_nonzero(safe_mask) + 1e-6)
 
-                # get actions
                 action_fn = jax.vmap(ft.partial(self.actor.get_action, actor_params))
                 action = action_fn(rollout_batch.graph)
 
-                # get next graph
                 forward_fn = jax_vmap(self._env.forward_graph)
                 next_graph = forward_fn(rollout_batch.graph, action)
                 h_next = merge01(cbf_fn(next_graph))
                 h_dot = (h_next - h) / self._env.dt
 
-                # h_dot + alpha * h > 0
                 max_val_h_dot = jax.nn.relu(-h_dot - self.alpha * h + self.eps)
-                loss_h_dot = jnp.mean(max_val_h_dot)  # + jnp.max(max_val_h_dot)
+                loss_h_dot = jnp.mean(max_val_h_dot)
                 acc_h_dot = jnp.mean(jnp.greater(h_dot + self.alpha * h, 0))
 
-                # action loss
                 u_ref = jax_vmap(self._env.u_ref)(rollout_batch.graph)
                 loss_action = jnp.mean(jnp.square(action - u_ref).sum(axis=-1))
 
-                # total loss
                 total_loss = (
                         self.loss_action_coef * loss_action
                         + self.loss_unsafe_coef * loss_unsafe
@@ -336,12 +328,12 @@ class GCBF(MultiAgentController):
             update_fn, (cbf_train_state, actor_train_state), batch_idx
         )
 
-        # get training info of the last epoch
         info = jtu.tree_map(lambda x: x[-1], info)
 
         return cbf_train_state, actor_train_state, info
 
     def save(self, save_dir: str, step: int):
+        """Save the actor and CBF parameters."""
         model_dir = os.path.join(save_dir, str(step))
         if not os.path.exists(model_dir):
             os.makedirs(model_dir)
@@ -349,6 +341,7 @@ class GCBF(MultiAgentController):
         pickle.dump(self.cbf_train_state.params, open(os.path.join(model_dir, 'cbf.pkl'), 'wb'))
 
     def load(self, load_dir: str, step: int):
+        """Load the actor and CBF parameters."""
         path = os.path.join(load_dir, str(step))
 
         self.actor_train_state = \

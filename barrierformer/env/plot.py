@@ -22,8 +22,7 @@ from .base import RolloutResult
 
 
 def _contour_artists(cs) -> list:
-    """Return a list of artists from a QuadContourSet.
-    matplotlib ≥ 3.8 removed .collections; the set itself is the artist."""
+    """Return a list of artists from a QuadContourSet."""
     if hasattr(cs, 'collections'):
         return list(cs.collections)
     return [cs]
@@ -50,6 +49,7 @@ def plot_graph(
         alpha: float = 1.0,
         obstacle_color: str = '#000000',
 ) -> Axes:
+    """Plot a 2D graph (agents, goals, obstacles and edges)."""
     if isinstance(radius, float):
         radius = np.ones(pos.shape[0]) * radius
     if isinstance(radius, list):
@@ -84,6 +84,7 @@ def plot_graph(
 
 
 def plot_node_3d(ax, pos: Pos3d, r: float, color: str, alpha: float, grid: int = 10) -> Axes:
+    """Plot one 3D node as a sphere."""
     u = np.linspace(0, 2 * np.pi, grid)
     v = np.linspace(0, np.pi, grid)
     x = r * np.outer(np.cos(u), np.sin(v)) + pos[0]
@@ -105,6 +106,7 @@ def plot_graph_3d(
         alpha: float = 1.0,
         obstacle_color: str = '#000000',
 ):
+    """Plot a 3D graph."""
     if isinstance(color, str):
         color = [color for _ in range(pos.shape[0])]
     for i in range(pos.shape[0]):
@@ -127,14 +129,10 @@ def plot_graph_3d(
 
 
 def get_BuRd():
-    # blue = "#3182bd"
-    # blue = hsl2hex([0.57, 0.59, 0.47])
+    """Blue-red colormap."""
     blue = hsl2hex([0.57, 0.5, 0.55])
     light_blue = hsl2hex([0.5, 1.0, 0.995])
 
-    # Tint it to orange a bit.
-    # red = "#de2d26"
-    # red = hsl2hex([0.04, 0.74, 0.51])
     red = hsl2hex([0.028, 0.62, 0.59])
     light_red = hsl2hex([0.098, 1.0, 0.995])
 
@@ -143,6 +141,7 @@ def get_BuRd():
 
 
 def get_faces_cuboid(points: Pos3d) -> Array:
+    """Faces of a cuboid."""
     point_id = jnp.array([[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [0, 3, 7, 4], [1, 2, 6, 5]])
     faces = points[point_id]
     return faces
@@ -151,6 +150,7 @@ def get_faces_cuboid(points: Pos3d) -> Array:
 def get_cuboid_collection(
         obstacles: Cuboid, alpha: float = 0.8, linewidth: float = 1.0, edgecolor: str = 'k', facecolor: str = 'r'
 ) -> Poly3DCollection:
+    """Matplotlib collection of cuboid obstacles."""
     get_faces_vmap = jax.vmap(get_faces_cuboid)
     cuboid_col = Poly3DCollection(
         merge01(get_faces_vmap(obstacles.points)),
@@ -165,6 +165,7 @@ def get_cuboid_collection(
 def get_sphere_collection(
         obstacles: Sphere, alpha: float = 0.8, facecolor: str = 'r'
 ) -> Poly3DCollection:
+    """Matplotlib collection of sphere obstacles."""
     def get_sphere(inp):
         center = inp[:3]
         radius = inp[3]
@@ -190,6 +191,7 @@ def get_sphere_collection(
 def get_obs_collection(
         obstacles: Obstacle, color: str, alpha: float
 ):
+    """Matplotlib collection for any obstacle type."""
     if isinstance(obstacles, Rectangle):
         n_obs = len(obstacles.center)
         obs_polys = [Polygon(obstacles.points[ii]) for ii in range(n_obs)]
@@ -216,9 +218,9 @@ def render_video(
         dpi: int = 100,
         **kwargs
 ):
+    """Render an episode rollout to a video file."""
     assert dim == 2 or dim == 3
 
-    # set up visualization option
     if dim == 2:
         ax: Axes
         fig, ax = plt.subplots(1, 1, figsize=(10, 10), dpi=dpi)
@@ -236,7 +238,6 @@ def render_video(
     if viz_opts is None:
         viz_opts = {}
 
-    # plot the first frame
     T_graph = rollout.Tp1_graph
     graph0 = tree_index(T_graph, 0)
 
@@ -245,11 +246,9 @@ def render_video(
     obs_color = "#8a0000"
     edge_goal_color = goal_color
 
-    # plot obstacles
     obs = graph0.env_states.obstacle
     ax.add_collection(get_obs_collection(obs, obs_color, alpha=0.8))
 
-    # plot agents
     n_hits = n_agent * n_rays
     n_color = [agent_color] * n_agent + [goal_color] * n_agent
     n_pos = graph0.states[:n_agent * 2, :dim]
@@ -262,15 +261,14 @@ def render_video(
     else:
         plot_r = ax.transData.transform([r, 0])[0] - ax.transData.transform([0, 0])[0]
         agent_col = ax.scatter(n_pos[:, 0], n_pos[:, 1], n_pos[:, 2],
-                               s=plot_r, c=n_color, zorder=5)  # todo: the size of the agent might not be correct
+                               s=plot_r, c=n_color, zorder=5)
 
-    # plot edges
     all_pos = graph0.states[:n_agent * 2 + n_hits, :dim]
     edge_index = np.stack([graph0.senders, graph0.receivers], axis=0)
     is_pad = np.any(edge_index == n_agent * 2 + n_hits, axis=0)
     e_edge_index = edge_index[:, ~is_pad]
     e_start, e_end = all_pos[e_edge_index[0, :]], all_pos[e_edge_index[1, :]]
-    e_lines = np.stack([e_start, e_end], axis=1)  # (e, n_pts, dim)
+    e_lines = np.stack([e_start, e_end], axis=1)
     e_is_goal = (n_agent <= graph0.senders) & (graph0.senders < n_agent * 2)
     e_is_goal = e_is_goal[~is_pad]
     e_colors = [edge_goal_color if e_is_goal[ii] else "0.2" for ii in range(len(e_start))]
@@ -280,7 +278,6 @@ def render_video(
         edge_col = Line3DCollection(e_lines, colors=e_colors, linewidths=2, alpha=0.5, zorder=3)
     ax.add_collection(edge_col)
 
-    # text for cost and reward
     text_font_opts = dict(
         size=16,
         color="k",
@@ -293,7 +290,6 @@ def render_video(
     else:
         cost_text = ax.text2D(0.02, 1.04, "Cost: 1.0, Reward: 1.0", va="bottom", **text_font_opts)
 
-    # text for safety
     safe_text = []
     if Ta_is_unsafe is not None:
         if dim == 2:
@@ -301,13 +297,11 @@ def render_video(
         else:
             safe_text = [ax.text2D(0.02, 1.00, "Unsafe: {}", va="bottom", **text_font_opts)]
 
-    # text for time step
     if dim == 2:
         kk_text = ax.text(0.99, 0.99, "kk=0", va="top", ha="right", **text_font_opts)
     else:
         kk_text = ax.text2D(0.99, 0.99, "kk=0", va="top", ha="right", **text_font_opts)
 
-    # add agent labels
     label_font_opts = dict(
         size=20,
         color="k",
@@ -327,7 +321,6 @@ def render_video(
             pos2d = proj3d.proj_transform(n_pos[ii, 0], n_pos[ii, 1], n_pos[ii, 2], ax.get_proj())[:2]
             agent_labels.append(ax.text2D(pos2d[0], pos2d[1], f"{ii}", **label_font_opts))
 
-    # plot cbf
     cnt_col = []
     if "cbf" in viz_opts:
         if dim == 3:
@@ -353,16 +346,13 @@ def render_video(
 
             ax.text(0.5, 1.0, "CBF for {}".format(cbf_num), transform=ax.transAxes, va="bottom")
 
-    # init function for animation
     def init_fn() -> list[plt.Artist]:
         return [agent_col, edge_col, *agent_labels, cost_text, *safe_text, *cnt_col, kk_text]
 
-    # update function for animation
     def update(kk: int) -> list[plt.Artist]:
         graph = tree_index(T_graph, kk)
         n_pos_t = graph.states[:-1, :dim]
 
-        # update agent positions
         if dim == 2:
             for ii in range(n_agent):
                 agent_circs[ii].set_center(tuple(n_pos_t[ii]))
@@ -370,7 +360,6 @@ def render_video(
             agent_col.set_offsets(n_pos_t[:n_agent * 2, :2])
             agent_col.set_3d_properties(n_pos_t[:n_agent * 2, 2], zdir='z')
 
-        # update edges
         e_edge_index_t = np.stack([graph.senders, graph.receivers], axis=0)
         is_pad_t = np.any(e_edge_index_t == n_agent * 2 + n_hits, axis=0)
         e_edge_index_t = e_edge_index_t[:, ~is_pad_t]
@@ -382,7 +371,6 @@ def render_video(
         edge_col.set_segments(e_lines_t)
         edge_col.set_colors(e_colors_t)
 
-        # update agent labels
         for ii in range(n_agent):
             if dim == 2:
                 agent_labels[ii].set_position(n_pos_t[ii])
@@ -390,7 +378,6 @@ def render_video(
                 text_pos = proj3d.proj_transform(n_pos_t[ii, 0], n_pos_t[ii, 1], n_pos_t[ii, 2], ax.get_proj())[:2]
                 agent_labels[ii].set_position(text_pos)
 
-        # update cost and safe labels (cumulative sums so the annotation is readable throughout the episode)
         if kk < len(rollout.T_cost):
             cum_cost   = float(np.asarray(rollout.T_cost[:kk + 1]).sum())
             cum_reward = float(np.asarray(rollout.T_reward[:kk + 1]).sum())
@@ -404,7 +391,6 @@ def render_video(
         else:
             safe_text[0].set_text("Unsafe: {}")
 
-        # Update the contourf — remove old, draw new (matplotlib-version-safe).
         nonlocal cnt, cnt_line
         if "cbf" in viz_opts and dim == 2:
             _remove_contour(cnt)

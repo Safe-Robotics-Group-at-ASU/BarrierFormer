@@ -14,6 +14,7 @@ from matplotlib.colors import CenteredNorm
 from ..utils.typing import PRNGKey
 from ..utils.graph import GraphsTuple
 from .data import Rollout
+from ..env.utils import inside_obstacles
 
 
 if TYPE_CHECKING:
@@ -27,19 +28,7 @@ def rollout(
         actor: Callable,
         key: PRNGKey
 ) -> Rollout:
-    """
-    Get a rollout from the environment using the actor.
-
-    Parameters
-    ----------
-    env: MultiAgentEnv
-    actor: Callable, [GraphsTuple, PRNGKey] -> Action
-    key: PRNGKey
-
-    Returns
-    -------
-    data: Rollout
-    """
+    """Get a rollout from the environment using the actor."""
     key_x0, key = jax.random.split(key)
     init_graph = env.reset(key_x0)
 
@@ -57,49 +46,13 @@ def rollout(
 
 def rollout_transformer(
         env: MultiAgentEnv,
-        policy_apply_fn: Callable,   # CausalTransformerPolicy.apply
-        policy_params: dict,          # frozen transformer parameter pytree
+        policy_apply_fn: Callable,
+        policy_params: dict,
         n_agents: int,
-        horizon: int,                 # predictive rollout horizon H
+        horizon: int,
         key: PRNGKey,
 ) -> Rollout:
-    """Episode rollout using the transformer receding-horizon policy for action selection.
-
-    Replaces rollout()'s plain actor(graph, key) call with a call to receding_horizon_act.  Only the first predicted action 
-    from the H-step rollout is applied to the real simulator; the rest is discarded.
-
-    Context management
-    ------------------
-    The scan carry is an unchanged GraphsTuple, no extra arrays are needed. env.step() already slides graph.env_states.obs_history
-    and graph.env_states.action_history forward using the true next observation and the true applied action, so the transformer 
-    context is automatically correct for the next scan step.
-
-    Shape reference (DoubleIntegrator defaults, history_len=16)
-    -----------------------------------------------------------
-    obs_seq  extracted from graph  : (n_agents, 16, obs_dim)
-    action_seq extracted           : (n_agents, 15, action_dim)
-    x_current                      : (n_agents, 4)
-    u_first  (returned action)     : (n_agents, action_dim)  → env.step()
-    scan carry in / out            : GraphsTuple  (structure unchanged)
-
-    Parameters
-    ----------
-    env             : Real environment instance.  Must implement u_nom_from_state,
-                      action_lim(), and expose _params["comm_radius"] and
-                      _params["n_rays"].
-    policy_apply_fn : CausalTransformerPolicy.apply  (Flax module apply).
-    policy_params   : Frozen parameter dict (output of model.init).
-    n_agents        : Number of agents.
-    horizon         : Receding-horizon window H.
-    key             : PRNG key for environment reset + scan.
-
-    Returns
-    -------
-    Rollout containing only **real** environment transitions.
-    Safe/unsafe labeling downstream is unaffected — it reads from this Rollout
-    exactly as before.
-    """
-    # Import here to keep the import side-effect-free when the GNN path is used.
+    """Episode rollout using the transformer receding-horizon policy for action selection."""
     from ..algo.receding_horizon import receding_horizon_act
 
     key_x0, key = jax.random.split(key)
@@ -127,19 +80,77 @@ def rollout_transformer(
     return Rollout(graphs, actions, rewards, costs, dones, next_graphs)
 
 
+def rollout_dyn_head(
+        env: MultiAgentEnv,
+        policy_apply_fn: Callable,
+        policy_params: dict,
+        n_agents: int,
+        key: PRNGKey,
+) -> tuple:
+    """Episode rollout using the dynamics-head world model (no real env.step)."""
+    key_x0, _ = jax.random.split(key)
+    graph = env.reset(key_x0)
+
+    x         = graph.type_states(type_idx=0, n_type=n_agents)
+    goals     = graph.env_states.goal
+    obstacles = graph.env_states.obstacle
+    car_r     = env._params["car_radius"]
+    action_lb, action_ub = env.action_lim()
+
+    obs0        = env._get_obs(x, goals, obstacles)
+    obs_history = jnp.repeat(obs0[None], env.history_len, axis=0)
+    act_history = jnp.zeros((env.history_len - 1, n_agents, env.action_dim))
+
+    def body(carry, _):
+        x_k, obs_hist, act_hist = carry
+
+        obs_seq = obs_hist.transpose(1, 0, 2)
+        act_seq = act_hist.transpose(1, 0, 2)
+        u_nom   = env.u_nom_from_state(x_k, goals)
+
+        out       = policy_apply_fn(policy_params, obs_seq, act_seq, u_nom, True)
+        u_applied = jnp.clip(out.u_applied, action_lb, action_ub)
+
+        x_next   = x_k + out.delta_x_hat
+        obs_next = env._get_obs(x_next, goals, obstacles)
+
+        new_obs_hist = jnp.concatenate([obs_hist[1:], obs_next[None]], axis=0)
+        new_act_hist = jnp.concatenate([act_hist[1:], u_applied[None]], axis=0)
+
+        is_unsafe = inside_obstacles(x_next[:, :2], obstacles, r=car_r)
+        is_finish = jnp.linalg.norm(x_next[:, :2] - goals[:, :2], axis=-1) < car_r * 2
+
+        cost   = is_unsafe.mean()
+        reward = -(jnp.linalg.norm(u_applied - u_nom, axis=-1) ** 2).mean()
+
+        return (x_next, new_obs_hist, new_act_hist), (is_unsafe, is_finish, reward, cost)
+
+    _, (step_unsafe, step_finish, step_rewards, step_costs) = jax.lax.scan(
+        body,
+        (x, obs_history, act_history),
+        xs=None,
+        length=env.max_episode_steps,
+    )
+    return step_unsafe, step_finish, step_rewards, step_costs
+
+
 def has_nan(x):
+    """Whether an array has NaNs."""
     return jtu.tree_map(lambda y: jnp.isnan(y).any(), x)
 
 
 def has_any_nan(x):
+    """Whether any array in a pytree has NaNs."""
     return jnp.array(jtu.tree_flatten(has_nan(x))[0]).any()
 
 
 def compute_norm(grad):
+    """Global norm of a gradient pytree."""
     return jnp.sqrt(sum(jnp.sum(jnp.square(x)) for x in jtu.tree_leaves(grad)))
 
 
 def compute_norm_and_clip(grad, max_norm: float):
+    """Global gradient norm and clipped gradients."""
     g_norm = compute_norm(grad)
     clipped_g_norm = jnp.maximum(max_norm, g_norm)
     clipped_grad = jtu.tree_map(lambda t: (t / clipped_g_norm) * max_norm, grad)
@@ -148,10 +159,12 @@ def compute_norm_and_clip(grad, max_norm: float):
 
 
 def tree_copy(tree):
+    """Copy a pytree."""
     return jtu.tree_map(lambda x: x.copy(), tree)
 
 
 def empty_grad_tx() -> optax.GradientTransformation:
+    """Optax transformation that does nothing."""
     def init_fn(params):
         return optax.EmptyState()
 
@@ -162,14 +175,17 @@ def empty_grad_tx() -> optax.GradientTransformation:
 
 
 def jax2np(x):
+    """Convert a pytree of JAX arrays to NumPy."""
     return jtu.tree_map(lambda y: np.array(y), x)
 
 
 def np2jax(x):
+    """Convert a pytree of NumPy arrays to JAX."""
     return jtu.tree_map(lambda y: jnp.array(y), x)
 
 
 def is_connected():
+    """Whether there is an internet connection."""
     try:
         sock = socket.create_connection(("www.google.com", 80))
         if sock is not None:
@@ -190,6 +206,7 @@ def plot_cbf(
         x_dim: int,
         y_dim: int,
 ) -> plt.Figure:
+    """Plot a CBF contour for one agent."""
     ax = fig.gca()
     n_mesh = 30
     low_lim, high_lim = env.state_lim(graph.states)
@@ -199,7 +216,6 @@ def plot_cbf(
     )
     states = graph.states
 
-    # generate new states
     plot_states = states[None, None, :, :].repeat(n_mesh, axis=0).repeat(n_mesh, axis=1)
     plot_states = plot_states.at[:, :, agent_id, x_dim].set(x)
     plot_states = plot_states.at[:, :, agent_id, y_dim].set(y)
@@ -219,6 +235,7 @@ def plot_cbf(
 
 
 def get_bb_cbf(cbf: Callable, env: MultiAgentEnv, graph: GraphsTuple, agent_id: int, x_dim: int, y_dim: int):
+    """CBF values on a mesh of positions for one agent."""
     n_mesh = 20
     low_lim = jnp.array([0, 0])
     high_lim = jnp.array([env.area_size, env.area_size])
@@ -227,7 +244,6 @@ def get_bb_cbf(cbf: Callable, env: MultiAgentEnv, graph: GraphsTuple, agent_id: 
     bb_Xs, bb_Ys = jnp.meshgrid(b_xs, b_ys)
     states = graph.states
 
-    # generate new states
     bb_plot_states = states[None, None, :, :].repeat(n_mesh, axis=0).repeat(n_mesh, axis=1)
     bb_plot_states = bb_plot_states.at[:, :, agent_id, x_dim].set(bb_Xs)
     bb_plot_states = bb_plot_states.at[:, :, agent_id, y_dim].set(bb_Ys)
@@ -241,6 +257,7 @@ def get_bb_cbf(cbf: Callable, env: MultiAgentEnv, graph: GraphsTuple, agent_id: 
 
 
 def centered_norm(vmin: float | list[float], vmax: float | list[float]):
+    """Color normalization centered at zero."""
     if isinstance(vmin, list):
         vmin = min(vmin)
     if isinstance(vmax, list):

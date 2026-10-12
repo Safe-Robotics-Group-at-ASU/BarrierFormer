@@ -16,7 +16,7 @@ from .utils import get_pwise_cbf_fn
 
 
 class DecShareCBF(MultiAgentController):
-    """Same as DecShareCBF, but takes the k closest agents into account."""
+    """Decentralized CBF-QP controller using the k closest agents."""
 
     def __init__(
             self,
@@ -29,6 +29,7 @@ class DecShareCBF(MultiAgentController):
             alpha: float = 1.0,
             **kwargs
     ):
+        """Set up the decentralized CBF-QP controller."""
         super().__init__(env=env, node_dim=node_dim, edge_dim=edge_dim, action_dim=action_dim, n_agents=n_agents)
 
         if hasattr(env, "enable_stop"):
@@ -40,29 +41,36 @@ class DecShareCBF(MultiAgentController):
 
     @property
     def config(self) -> dict:
+        """Algorithm configuration dictionary."""
         return {
             "alpha": self.cbf_alpha,
         }
 
     @property
     def actor_params(self) -> Params:
+        """No learned actor parameters."""
         raise NotImplementedError
 
     def step(self, graph: GraphsTuple, key: PRNGKey, params: Optional[Params] = None) -> Tuple[Action, Array]:
+        """Not used (no stochastic policy)."""
         raise NotImplementedError
 
     def get_cbf(self, graph: GraphsTuple) -> tuple[Array, Array]:
+        """Hand-crafted CBF values for a graph."""
         ak_h0, ak_isobs = self.cbf(graph)
         return ak_h0, ak_isobs
 
     def update(self, rollout: Rollout, step: int) -> dict:
+        """No training for this controller."""
         raise NotImplementedError
 
     def act(self, graph: GraphsTuple, params: Optional[Params] = None) -> Action:
+        """Action from the decentralized CBF-QPs."""
         return self.get_qp_action(graph)[0]
 
     def get_qp_action(self, graph: GraphsTuple, relax_penalty: float = 1e3) -> [Action, Array]:
-        assert graph.is_single  # consider single graph
+        """Solve one CBF-QP per agent."""
+        assert graph.is_single
         agent_node_mask = graph.node_type == 0
         agent_node_id = mask2index(agent_node_mask, self.n_agents)
 
@@ -78,9 +86,7 @@ class DecShareCBF(MultiAgentController):
             return h_aug(new_agent_state)[0]
 
         agent_state = graph.type_states(type_idx=0, n_type=self.n_agents)
-        # (n_agents, k)
         ak_h, ak_isobs = h_aug(agent_state)
-        # (n_agents, k | n_agents, nx)
         ak_hx = jax.jacfwd(h)(agent_state)
 
         a_dyn_f, a_dyn_g = self._env.control_affine_dyn(agent_state)
@@ -97,16 +103,15 @@ class DecShareCBF(MultiAgentController):
         au_ref = self._env.u_ref(graph)
         assert au_ref.shape == (self.n_agents, self.action_dim)
 
-        # (n_agents, ). 1 if agent-obs, 0.5 if agent-agent.
         ak_resp = jnp.where(ak_isobs, 1.0, 0.5)
 
-        # construct QP
         au_opt, ar = jax_vmap(ft.partial(self._solve_qp_single, relax_penalty=relax_penalty))(
             ak_h, ak_Lf_h, ak_Lg_h_self, au_ref, ak_resp
         )
         return au_opt, ar
 
     def _solve_qp_single(self, k_h, k_Lf_h, k_Lg_h, u_ref, k_responsibility: float, relax_penalty: float = 1e3):
+        """Solve the CBF-QP for a single agent."""
         n_qp_x = self._env.action_dim + self.k
 
         assert k_h.shape == (self.k,)
@@ -116,8 +121,6 @@ class DecShareCBF(MultiAgentController):
         u_lb, u_ub = self._env.action_lim()
         assert u_lb.shape == u_ub.shape == (self.action_dim,)
 
-        ###########
-
         H = jnp.eye(n_qp_x, dtype=jnp.float32)
         H = H.at[-self.k :, -self.k :].set(10.0)
         g = jnp.concatenate([-u_ref, relax_penalty * jnp.ones(self.k)], axis=0)
@@ -126,7 +129,6 @@ class DecShareCBF(MultiAgentController):
         k_C = -jnp.concatenate([k_Lg_h, jnp.eye(self.k)], axis=1)
         assert k_C.shape == (self.k, n_qp_x)
 
-        # Responsibility is one if this is agent-obs, half if this is agent-agent.
         k_b = k_responsibility * (k_Lf_h + self.cbf_alpha * k_h)
         assert k_b.shape == (self.k,)
 
@@ -150,7 +152,9 @@ class DecShareCBF(MultiAgentController):
         return u_opt, r
 
     def save(self, save_dir: str, step: int):
+        """Nothing to save."""
         raise NotImplementedError
 
     def load(self, load_dir: str, step: int):
+        """Nothing to load."""
         raise NotImplementedError

@@ -1,15 +1,16 @@
 from .base import MultiAgentController
 from .dec_share_cbf import DecShareCBF
 from .gcbf import GCBF
-from .barrierformer import BarrierFormer
+from .gcbf_plus import GCBFPlus
 from .centralized_cbf import CentralizedCBF
 
 
 def make_algo(algo: str, **kwargs) -> MultiAgentController:
+    """Create an algorithm instance by name."""
     if algo == 'gcbf':
         return GCBF(**kwargs)
     elif algo == 'gcbf+':
-        return BarrierFormer(**kwargs)
+        return GCBFPlus(**kwargs)
     elif algo == 'centralized_cbf':
         return CentralizedCBF(**kwargs)
     elif algo == 'dec_share_cbf':

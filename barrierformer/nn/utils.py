@@ -20,6 +20,7 @@ default_nn_init = nn.initializers.xavier_uniform
 
 
 def scaled_init(initializer: nn.initializers.Initializer, scale: float) -> nn.initializers.Initializer:
+    """Scale an initializer by a constant."""
     def scaled_init_inner(*args, **kwargs) -> AnyFloat:
         return scale * initializer(*args, **kwargs)
 
@@ -30,6 +31,7 @@ ActLiteral = Literal["relu", "tanh", "elu", "swish", "silu", "gelu", "softplus"]
 
 
 def get_act_from_str(act_str: ActLiteral) -> ActFn:
+    """Activation function from its name."""
     act_dict: dict[Literal, ActFn] = dict(
         relu=nn.relu, tanh=nn.tanh, elu=nn.elu, swish=nn.swish, silu=nn.silu, gelu=nn.gelu, softplus=nn.softplus
     )
@@ -37,6 +39,7 @@ def get_act_from_str(act_str: ActLiteral) -> ActFn:
 
 
 def signal_last_enumerate(it: Iterable[_Elem]) -> Generator[tuple[bool, int, _Elem], None, None]:
+    """Enumerate an iterable and flag the last element."""
     iterable = iter(it)
     count = 0
     ret_var = next(iterable)
@@ -48,4 +51,5 @@ def signal_last_enumerate(it: Iterable[_Elem]) -> Generator[tuple[bool, int, _El
 
 
 def safe_get(arr, idx):
+    """Get an array element, returning a default when out of range."""
     return arr.at[idx].get(mode='fill', fill_value=jnp.nan)
